@@ -1,10 +1,14 @@
 #include "Downloader.h"
-#include <shlobj.h>
+#include <fcntl.h>
+#include <cstring>
 #include <thread>
 #include <sstream>
 #include <regex>
 #include <algorithm>
 #include <iomanip>
+#include <unistd.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 std::vector<DownloadTask> g_queue;
 std::mutex g_queueMutex;
@@ -14,7 +18,7 @@ std::atomic<bool> g_isWorkerRunning(false);
 std::atomic<bool> g_stopRequested(false);
 std::atomic<int> g_currentDownloadingId(-1);
 
-static HANDLE g_hCurrentProcess = NULL;
+static pid_t g_currentPid = -1; 
 static std::mutex g_procMutex;
 
 std::atomic<bool> g_isUpdatingYtDlp(false);
@@ -42,30 +46,26 @@ const char* g_formatNames[] = {
 const int g_formatCount = 7;
 
 void BrowseDestinationFolder(char* outPath, size_t maxLen) {
-    BROWSEINFOA bi = { 0 };
-    bi.lpszTitle = "Chọn thư mục lưu trữ danh sách tải";
-    bi.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE;
-    LPITEMIDLIST pidl = SHBrowseForFolderA(&bi);
-    if (pidl != 0) {
-        char path[MAX_PATH];
-        if (SHGetPathFromIDListA(pidl, path)) {
-            strncpy(outPath, path, maxLen);
+    FILE* fp = popen("zenity --file-selection --directory --title=\"Chọn thư mục lưu trữ\" 2>/dev/null", "r");
+    if (fp) {
+        char buffer[MAX_PATH];
+        if (fgets(buffer, sizeof(buffer), fp) != NULL) {
+            std::string path = buffer;
+            path.erase(path.find_last_not_of(" \t\r\n") + 1);
+            if (!path.empty()) {
+                strncpy(outPath, path.c_str(), maxLen);
+            }
         }
-        IMalloc* imalloc = 0;
-        if (SUCCEEDED(SHGetMalloc(&imalloc))) {
-            imalloc->Free(pidl);
-            imalloc->Release();
-        }
+        pclose(fp);
     }
 }
 
 void AbortCurrentDownload() {
     g_stopRequested = true;
     std::lock_guard<std::mutex> lock(g_procMutex);
-    if (g_hCurrentProcess != NULL) {
-        TerminateProcess(g_hCurrentProcess, 1);
-        CloseHandle(g_hCurrentProcess);
-        g_hCurrentProcess = NULL;
+    if (g_currentPid > 0) {
+        kill(g_currentPid, SIGTERM);
+        g_currentPid = -1;
     }
 }
 
@@ -112,52 +112,29 @@ static std::string DecodeUnicodeEscape(const std::string& input) {
 }
 
 static void FetchMetadataWorker(int taskId, std::string url, bool allowPlaylist) {
-    HANDLE hReadPipe, hWritePipe;
-    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
-    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) return;
-
-    STARTUPINFOA si = { sizeof(STARTUPINFOA) };
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.hStdOutput = hWritePipe;
-    si.hStdError = hWritePipe;
-    si.wShowWindow = SW_HIDE;
-
-    PROCESS_INFORMATION pi = { 0 };
-
-    // Nếu là Playlist: dùng --dump-single-json để gom toàn bộ playlist thành 1 object JSON duy nhất chứa "title" của playlist và "playlist_count"
-    std::string cmd = "yt-dlp.exe --encoding utf-8 --skip-download ";
+    std::string cmd = "yt-dlp --encoding utf-8 --skip-download ";
     if (allowPlaylist) {
-        cmd += "--flat-playlist --dump-single-json \"" + url + "\"";
+        cmd += "--flat-playlist --dump-single-json \"" + url + "\" 2>/dev/null";
     } else {
-        cmd += "--no-playlist --dump-json \"" + url + "\"";
+        cmd += "--no-playlist --dump-json \"" + url + "\" 2>/dev/null";
     }
 
-    if (!CreateProcessA(NULL, &cmd[0], NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
-        CloseHandle(hReadPipe);
-        CloseHandle(hWritePipe);
-        return;
-    }
-    CloseHandle(hWritePipe);
+    FILE* fp = popen(cmd.c_str(), "r");
+    if (!fp) return;
 
     std::string jsonOutput = "";
     char buffer[2048];
-    DWORD bytesRead;
-    while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
-        buffer[bytesRead] = '\0';
+    while (fgets(buffer, sizeof(buffer), fp)) {
         jsonOutput += buffer;
+        if (allowPlaylist && jsonOutput.find('\n') != std::string::npos) break;
     }
-
-    WaitForSingleObject(pi.hProcess, 5000);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    CloseHandle(hReadPipe);
+    pclose(fp);
 
     if (jsonOutput.empty()) return;
 
     std::string extractedTitle = "";
     std::string extractedDuration = allowPlaylist ? "Playlist" : "--:--";
 
-    // 1. Trích xuất Title chung
     std::regex titleRegex(R"raw("title"\s*:\s*"((?:\\.|[^"\\])*)")raw");
     std::smatch titleMatch;
     if (std::regex_search(jsonOutput, titleMatch, titleRegex)) {
@@ -169,7 +146,6 @@ static void FetchMetadataWorker(int taskId, std::string url, bool allowPlaylist)
         extractedTitle = DecodeUnicodeEscape(extractedTitle);
     }
 
-    // 2. Trích xuất thời lượng hoặc số lượng video trong playlist
     if (allowPlaylist) {
         std::regex countRegex(R"raw("playlist_count"\s*:\s*(\d+))raw");
         std::smatch countMatch;
@@ -234,59 +210,45 @@ static std::string GetFormatString(int type, int resIndex) {
 }
 
 static bool ExecuteSingleDownload(DownloadTask& task, const std::string& savePath, bool useArchive) {
-    HANDLE hReadPipe, hWritePipe;
-    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
-    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) return false;
+    int pipefd[2];
+    if (pipe(pipefd) == -1) return false;
 
-    STARTUPINFOA si = { sizeof(STARTUPINFOA) };
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.hStdOutput = hWritePipe;
-    si.hStdError = hWritePipe;
-    si.wShowWindow = SW_HIDE;
-
-    PROCESS_INFORMATION pi = { 0 };
-
-    std::string cmd = "yt-dlp.exe --newline -P \"" + savePath + "\" ";
-    
-    // Nếu KHÔNG cho phép playlist thì mới gắn cờ --no-playlist
-    if (!task.allowPlaylist) {
-        cmd += "--no-playlist ";
-    }
-
-    if (useArchive) {
-        cmd += "--download-archive \"" + savePath + "\\archive.txt\" ";
-    }
+    // Đổi tên binary thành yt-dlp (không có .exe) và gạch chéo chuẩn /
+    std::string cmd = "./yt-dlp --newline -P \"" + savePath + "\" ";
+    if (!task.allowPlaylist) cmd += "--no-playlist ";
+    if (useArchive) cmd += "--download-archive \"" + savePath + "/archive.txt\" ";
     cmd += GetFormatString(task.type, task.resIndex);
     cmd += "-o \"%(title)s.%(ext)s\" \"" + task.url + "\"";
 
-    if (!CreateProcessA(NULL, &cmd[0], NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
-        CloseHandle(hReadPipe);
-        CloseHandle(hWritePipe);
-        return false;
-    }
-    CloseHandle(hWritePipe);
+    pid_t pid = fork();
+    if (pid == 0) { // Tiến trình con
+        close(pipefd[0]);
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[1]);
 
+        execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)NULL);
+        _exit(1);
+    }
+
+    // Tiến trình cha
+    close(pipefd[1]);
     {
         std::lock_guard<std::mutex> lock(g_procMutex);
-        g_hCurrentProcess = pi.hProcess;
+        g_currentPid = pid;
     }
 
+    FILE* stream = fdopen(pipefd[0], "r");
     char buffer[512];
-    DWORD bytesRead;
-    std::string logLine = "";
     std::regex progressRegex(R"(\[download\]\s+(\d+\.\d+)%\s+of\s+[~]?([^\s]+)\s+at\s+([^\s]+)\s+ETA\s+([^\s]+))");
     std::regex simplePercentRegex(R"(\[download\]\s+(\d+\.\d+)%)");
     std::regex archiveRegex(R"(\[download\]\s+.*has already been recorded in the archive)");
 
-    while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
-        buffer[bytesRead] = '\0';
-        logLine += buffer;
-        size_t pos;
-        while ((pos = logLine.find('\n')) != std::string::npos) {
-            std::string line = logLine.substr(0, pos);
-            logLine.erase(0, pos + 1);
-
+    if (stream) {
+        while (fgets(buffer, sizeof(buffer), stream)) {
+            std::string line(buffer);
             std::smatch match;
+
             if (std::regex_search(line, archiveRegex)) {
                 std::lock_guard<std::mutex> lock(g_queueMutex);
                 task.progress = 1.0f;
@@ -308,23 +270,18 @@ static bool ExecuteSingleDownload(DownloadTask& task, const std::string& savePat
                 } catch (...) {}
             }
         }
+        fclose(stream);
     }
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD exitCode;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
+    int status = 0;
+    waitpid(pid, &status, 0);
 
     {
         std::lock_guard<std::mutex> lock(g_procMutex);
-        if (g_hCurrentProcess != NULL) {
-            CloseHandle(g_hCurrentProcess);
-            g_hCurrentProcess = NULL;
-        }
+        g_currentPid = -1;
     }
-    CloseHandle(pi.hThread);
-    CloseHandle(hReadPipe);
 
-    return (exitCode == 0);
+    return (WIFEXITED(status) && WEXITSTATUS(status) == 0);
 }
 
 static void QueueWorkerLoop(std::string savePath, bool useArchive) {
@@ -469,49 +426,22 @@ void DeleteTask(int taskId) {
 }
 
 static void UpdateWorkerThread() {
-    HANDLE hReadPipe, hWritePipe;
-    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
-    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+    std::string cmd = "yt-dlp -U 2>&1";
+    FILE* fp = popen(cmd.c_str(), "r");
+    if (!fp) {
         std::lock_guard<std::mutex> lock(g_updateMutex);
-        g_updateStatusMsg = "Lỗi khởi tạo Pipe cập nhật.";
+        g_updateStatusMsg = "Không tìm thấy yt-dlp hoặc lỗi thực thi.";
         g_isUpdatingYtDlp = false;
         return;
     }
-
-    STARTUPINFOA si = { sizeof(STARTUPINFOA) };
-    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.hStdOutput = hWritePipe;
-    si.hStdError = hWritePipe;
-    si.wShowWindow = SW_HIDE;
-
-    PROCESS_INFORMATION pi = { 0 };
-    std::string cmd = "yt-dlp.exe -U";
-
-    if (!CreateProcessA(NULL, &cmd[0], NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
-        std::lock_guard<std::mutex> lock(g_updateMutex);
-        g_updateStatusMsg = "Không tìm thấy file yt-dlp.exe để cập nhật.";
-        CloseHandle(hReadPipe);
-        CloseHandle(hWritePipe);
-        g_isUpdatingYtDlp = false;
-        return;
-    }
-    CloseHandle(hWritePipe);
 
     char buffer[512];
-    DWORD bytesRead;
     std::string output = "";
-
-    while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
-        buffer[bytesRead] = '\0';
+    while (fgets(buffer, sizeof(buffer), fp)) {
         output += buffer;
     }
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
-    DWORD exitCode;
-    GetExitCodeProcess(pi.hProcess, &exitCode);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    CloseHandle(hReadPipe);
+    int exitCode = pclose(fp);
 
     std::lock_guard<std::mutex> lock(g_updateMutex);
     if (exitCode == 0) {

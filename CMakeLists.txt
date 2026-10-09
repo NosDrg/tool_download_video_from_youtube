@@ -1,25 +1,29 @@
 cmake_minimum_required(VERSION 3.16)
-project(VideoDownloader LANGUAGES CXX)
+project(VideoDownloaderLinux LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-file(GLOB IMGUI_SOURCES "imgui/*.cpp")
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(GLFW REQUIRED glfw3)
+find_package(OpenGL REQUIRED)
 
-include_directories(. imgui)
+include_directories(. imgui imgui/backends ${GLFW_INCLUDE_DIRS})
 
-add_executable(VideoDownloader WIN32 
-    main.cpp 
-    Downloader.cpp 
-    UI.cpp 
-    ${IMGUI_SOURCES}
+add_executable(VideoDownloader
+    main.cpp
+    Downloader.cpp
+    UI.cpp
+    imgui/imgui.cpp
+    imgui/imgui_draw.cpp
+    imgui/imgui_tables.cpp
+    imgui/imgui_widgets.cpp
+    imgui/imgui_impl_glfw.cpp
+    imgui/imgui_impl_opengl3.cpp
 )
 
-target_link_libraries(VideoDownloader PRIVATE 
-    d3d12 
-    dxgi 
-    d3dcompiler 
-    dwmapi 
-    shell32 
-    ole32
+target_link_libraries(VideoDownloader PRIVATE
+    ${GLFW_LIBRARIES}
+    OpenGL::GL
+    pthread
 )

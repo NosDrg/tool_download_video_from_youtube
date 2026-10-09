@@ -1,5 +1,5 @@
 #pragma once
-#include <windows.h>
+#include <cstddef>
 
 void InitUI();
-void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight);
+void RenderDownloaderUI(void* windowHandle, int windowWidth, int windowHeight);

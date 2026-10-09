@@ -1,9 +1,11 @@
 #include "UI.h"
 #include "Downloader.h"
-#include "imgui/imgui.h"
-#include <shellapi.h>
+#include "imgui.h"
+#include <cstdlib>
+#include <cstring>
+#include <string>
 
-static char g_savePathBuf[MAX_PATH] = "C:\\Downloads";
+static char g_savePathBuf[MAX_PATH] = "/tmp";
 static char g_multiUrlBuf[16384] = "";
 static int g_selectedType = 0;
 static int g_selectedRes = 0;
@@ -11,10 +13,14 @@ static bool g_useArchive = true;
 static bool g_allowPlaylist = false; // Checkbox cho phép tải playlist
 
 void InitUI() {
-    CreateDirectoryA(g_savePathBuf, NULL);
+    const char* home = getenv("HOME");
+    if (home) {
+        std::string dl = std::string(home) + "/Downloads";
+        strncpy(g_savePathBuf, dl.c_str(), sizeof(g_savePathBuf) - 1);
+    }
 }
 
-void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
+void RenderDownloaderUI(void* windowHandle, int windowWidth, int windowHeight) {
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(ImVec2((float)windowWidth, (float)windowHeight));
     ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoTitleBar | 
@@ -25,7 +31,7 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
     ImGui::Begin("MainPanel", nullptr, windowFlags);
 
     // Tiêu đề & Nút Cập nhật Core
-    ImGui::TextColored(ImVec4(0.2f, 0.8f, 1.0f, 1.0f), u8"BỘ CÔNG CỤ TẢI MEDIA TỰ ĐỘNG (DIRECTX 12)");
+    ImGui::TextColored(ImVec4(0.2f, 0.8f, 1.0f, 1.0f), u8"BỘ CÔNG CỤ TẢI MEDIA TỰ ĐỘNG (Linux)");
     ImGui::SameLine(ImGui::GetWindowWidth() - 320);
 
     if (g_isUpdatingYtDlp.load()) {
@@ -60,7 +66,8 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
     }
     ImGui::SameLine();
     if (ImGui::Button(u8"Mở thư mục")) {
-        ShellExecuteA(NULL, "open", g_savePathBuf, NULL, NULL, SW_SHOWDEFAULT);
+        std::string openCmd = "xdg-open \"" + std::string(g_savePathBuf) + "\" &";
+        system(openCmd.c_str());    
     }
 
     // 2. Ô nhập nhiều link
@@ -130,7 +137,7 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
         if (g_isWorkerRunning.load()) {
             AbortCurrentDownload();
         }
-        PostMessage(hWnd, WM_CLOSE, 0, 0);
+        exit(0);
     }
 
     ImGui::Spacing();
@@ -239,8 +246,8 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
                 }
             } else if (item.status == TaskStatus::Completed) {
                 if (ImGui::SmallButton(u8"Mở thư mục")) {
-                    ShellExecuteA(NULL, "open", g_savePathBuf, NULL, NULL, SW_SHOWDEFAULT);
-                }
+                std::string openCmd = "xdg-open \"" + std::string(g_savePathBuf) + "\" &";
+                system(openCmd.c_str());                }
             } else {
                 ImGui::TextDisabled("...");
             }
