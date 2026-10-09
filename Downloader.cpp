@@ -4,6 +4,7 @@
 #include <sstream>
 #include <regex>
 #include <algorithm>
+#include <iomanip>
 
 std::vector<DownloadTask> g_queue;
 std::mutex g_queueMutex;
@@ -15,6 +16,10 @@ std::atomic<int> g_currentDownloadingId(-1);
 
 static HANDLE g_hCurrentProcess = NULL;
 static std::mutex g_procMutex;
+
+std::atomic<bool> g_isUpdatingYtDlp(false);
+std::mutex g_updateMutex;
+std::string g_updateStatusMsg = "";
 
 const char* g_resNames[] = {
     "Tốt nhất (Gốc)",
@@ -50,6 +55,93 @@ void AbortCurrentDownload() {
         TerminateProcess(g_hCurrentProcess, 1);
         CloseHandle(g_hCurrentProcess);
         g_hCurrentProcess = NULL;
+    }
+}
+
+static std::string FormatSecondsToTime(int totalSeconds) {
+    if (totalSeconds <= 0) return "--:--";
+    int hours = totalSeconds / 3600;
+    int minutes = (totalSeconds % 3600) / 60;
+    int seconds = totalSeconds % 60;
+    std::ostringstream oss;
+    if (hours > 0) {
+        oss << hours << ":" << std::setfill('0') << std::setw(2) << minutes << ":" << std::setw(2) << seconds;
+    } else {
+        oss << std::setfill('0') << std::setw(2) << minutes << ":" << std::setw(2) << seconds;
+    }
+    return oss.str();
+}
+
+// Luồng ngầm fetch tiêu đề và thời lượng bằng --dump-json
+static void FetchMetadataWorker(int taskId, std::string url) {
+    HANDLE hReadPipe, hWritePipe;
+    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) return;
+
+    STARTUPINFOA si = { sizeof(STARTUPINFOA) };
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.hStdOutput = hWritePipe;
+    si.hStdError = hWritePipe;
+    si.wShowWindow = SW_HIDE;
+
+    PROCESS_INFORMATION pi = { 0 };
+    std::string cmd = "yt-dlp.exe --dump-json --flat-playlist --skip-download --no-playlist \"" + url + "\"";
+
+    if (!CreateProcessA(NULL, &cmd[0], NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+        CloseHandle(hReadPipe);
+        CloseHandle(hWritePipe);
+        return;
+    }
+    CloseHandle(hWritePipe);
+
+    std::string jsonOutput = "";
+    char buffer[1024];
+    DWORD bytesRead;
+    while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+        buffer[bytesRead] = '\0';
+        jsonOutput += buffer;
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(hReadPipe);
+
+    if (jsonOutput.empty()) return;
+
+    std::string extractedTitle = "";
+    std::string extractedDuration = "--:--";
+
+    // Trích xuất "title": "..."
+    std::regex titleRegex(R"raw("title"\s*:\s*"((?:\\.|[^"\\])*)")raw");
+    std::smatch titleMatch;
+    if (std::regex_search(jsonOutput, titleMatch, titleRegex)) {
+        extractedTitle = titleMatch[1].str();
+        // Xử lý escape escape cơ bản
+        size_t p;
+        while ((p = extractedTitle.find("\\\"")) != std::string::npos) extractedTitle.replace(p, 2, "\"");
+        while ((p = extractedTitle.find("\\\\")) != std::string::npos) extractedTitle.replace(p, 2, "\\");
+    }
+
+    // Trích xuất "duration": 123 hoặc "duration": 123.0
+    std::regex durationRegex(R"raw("duration"\s*:\s*(\d+(?:\.\d+)?))raw");
+    std::smatch durMatch;
+    if (std::regex_search(jsonOutput, durMatch, durationRegex)) {
+        try {
+            int secs = static_cast<int>(std::stof(durMatch[1].str()));
+            extractedDuration = FormatSecondsToTime(secs);
+        } catch (...) {}
+    }
+
+    if (!extractedTitle.empty()) {
+        std::lock_guard<std::mutex> lock(g_queueMutex);
+        for (auto& item : g_queue) {
+            if (item.id == taskId) {
+                item.title = extractedTitle;
+                item.duration = extractedDuration;
+                break;
+            }
+        }
     }
 }
 
@@ -226,19 +318,31 @@ void StartQueueWorker(const std::string& savePath, bool useArchive) {
 void EnqueueUrls(const std::string& multiUrlText, int type, int resIndex) {
     std::stringstream ss(multiUrlText);
     std::string line;
-    std::lock_guard<std::mutex> lock(g_queueMutex);
-    while (std::getline(ss, line)) {
-        line.erase(0, line.find_first_not_of(" \t\r\n"));
-        line.erase(line.find_last_not_of(" \t\r\n") + 1);
-        if (!line.empty() && line.rfind("http", 0) == 0) {
-            DownloadTask task;
-            task.id = g_nextTaskId++;
-            task.url = line;
-            task.type = type;
-            task.resIndex = resIndex;
-            task.status = TaskStatus::Queued;
-            g_queue.push_back(task);
+    std::vector<std::pair<int, std::string>> tasksToFetch;
+
+    {
+        std::lock_guard<std::mutex> lock(g_queueMutex);
+        while (std::getline(ss, line)) {
+            line.erase(0, line.find_first_not_of(" \t\r\n"));
+            line.erase(line.find_last_not_of(" \t\r\n") + 1);
+            if (!line.empty() && line.rfind("http", 0) == 0) {
+                DownloadTask task;
+                task.id = g_nextTaskId++;
+                task.url = line;
+                task.title = "Đang lấy thông tin...";
+                task.duration = "--:--";
+                task.type = type;
+                task.resIndex = resIndex;
+                task.status = TaskStatus::Queued;
+                g_queue.push_back(task);
+                tasksToFetch.push_back({task.id, task.url});
+            }
         }
+    }
+
+    // Khởi chạy các luồng tách biệt để fetch metadata ngầm mà không giật lag UI
+    for (const auto& item : tasksToFetch) {
+        std::thread(FetchMetadataWorker, item.first, item.second).detach();
     }
 }
 
@@ -255,4 +359,104 @@ void ClearCompletedTasks() {
 void ClearAllTasks() {
     std::lock_guard<std::mutex> lock(g_queueMutex);
     g_queue.clear();
+}
+
+void RetryTask(int taskId) {
+    std::string urlToRetry = "";
+    {
+        std::lock_guard<std::mutex> lock(g_queueMutex);
+        for (auto& item : g_queue) {
+            if (item.id == taskId) {
+                item.status = TaskStatus::Queued;
+                item.progress = 0.0f;
+                item.speed = "--";
+                item.eta = "--";
+                if (item.title == "Đang lấy thông tin..." || item.title.empty()) {
+                    urlToRetry = item.url;
+                }
+                break;
+            }
+        }
+    }
+    if (!urlToRetry.empty()) {
+        std::thread(FetchMetadataWorker, taskId, urlToRetry).detach();
+    }
+}
+
+void DeleteTask(int taskId) {
+    std::lock_guard<std::mutex> lock(g_queueMutex);
+    g_queue.erase(
+        std::remove_if(g_queue.begin(), g_queue.end(), [taskId](const DownloadTask& t) {
+            return t.id == taskId && t.status != TaskStatus::Downloading;
+        }),
+        g_queue.end()
+    );
+}
+
+static void UpdateWorkerThread() {
+    HANDLE hReadPipe, hWritePipe;
+    SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+        std::lock_guard<std::mutex> lock(g_updateMutex);
+        g_updateStatusMsg = "Lỗi khởi tạo Pipe cập nhật.";
+        g_isUpdatingYtDlp = false;
+        return;
+    }
+
+    STARTUPINFOA si = { sizeof(STARTUPINFOA) };
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.hStdOutput = hWritePipe;
+    si.hStdError = hWritePipe;
+    si.wShowWindow = SW_HIDE;
+
+    PROCESS_INFORMATION pi = { 0 };
+    std::string cmd = "yt-dlp.exe -U";
+
+    if (!CreateProcessA(NULL, &cmd[0], NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
+        std::lock_guard<std::mutex> lock(g_updateMutex);
+        g_updateStatusMsg = "Không tìm thấy file yt-dlp.exe để cập nhật.";
+        CloseHandle(hReadPipe);
+        CloseHandle(hWritePipe);
+        g_isUpdatingYtDlp = false;
+        return;
+    }
+    CloseHandle(hWritePipe);
+
+    char buffer[512];
+    DWORD bytesRead;
+    std::string output = "";
+
+    while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
+        buffer[bytesRead] = '\0';
+        output += buffer;
+    }
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exitCode;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(hReadPipe);
+
+    std::lock_guard<std::mutex> lock(g_updateMutex);
+    if (exitCode == 0) {
+        if (output.find("is up to date") != std::string::npos) {
+            g_updateStatusMsg = "yt-dlp đang ở bản mới nhất.";
+        } else {
+            g_updateStatusMsg = "Đã cập nhật yt-dlp thành công!";
+        }
+    } else {
+        g_updateStatusMsg = "Cập nhật thất bại. Kiểm tra kết nối mạng.";
+    }
+    g_isUpdatingYtDlp = false;
+}
+
+void UpdateYtDlpAsync() {
+    if (g_isUpdatingYtDlp.load()) return;
+    g_isUpdatingYtDlp = true;
+    {
+        std::lock_guard<std::mutex> lock(g_updateMutex);
+        g_updateStatusMsg = "Đang kiểm tra và cập nhật...";
+    }
+    std::thread(UpdateWorkerThread).detach();
 }

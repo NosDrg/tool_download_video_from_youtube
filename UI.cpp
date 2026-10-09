@@ -23,7 +23,28 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
 
     ImGui::Begin("MainPanel", nullptr, windowFlags);
 
+    // Tiêu đề & Nút Cập nhật Core
     ImGui::TextColored(ImVec4(0.2f, 0.8f, 1.0f, 1.0f), u8"BỘ CÔNG CỤ TẢI MEDIA TỰ ĐỘNG (DIRECTX 12)");
+    ImGui::SameLine(ImGui::GetWindowWidth() - 320);
+
+    if (g_isUpdatingYtDlp.load()) {
+        ImGui::BeginDisabled();
+        ImGui::Button(u8"Đang cập nhật...", ImVec2(140, 24));
+        ImGui::EndDisabled();
+    } else {
+        if (ImGui::Button(u8"Cập nhật yt-dlp", ImVec2(140, 24))) {
+            UpdateYtDlpAsync();
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(g_updateMutex);
+        if (!g_updateStatusMsg.empty()) {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.2f, 1.0f), "%s", g_updateStatusMsg.c_str());
+        }
+    }
+
     ImGui::Separator();
 
     // 1. Thư mục lưu
@@ -43,7 +64,7 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
 
     // 2. Ô nhập nhiều link
     ImGui::Text(u8"Dán danh sách liên kết tại đây (mỗi link trên 1 dòng):");
-    ImGui::InputTextMultiline("##MultiUrl", g_multiUrlBuf, IM_ARRAYSIZE(g_multiUrlBuf), ImVec2(-1, 85));
+    ImGui::InputTextMultiline("##MultiUrl", g_multiUrlBuf, IM_ARRAYSIZE(g_multiUrlBuf), ImVec2(-1, 80));
 
     // 3. Tùy chọn định dạng & độ phân giải
     ImGui::Text(u8"Định dạng:");
@@ -76,7 +97,7 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
     ImGui::Checkbox(u8"Chống tải trùng lặp (archive.txt)", &g_useArchive);
     ImGui::Separator();
 
-    // 5. Nút điều phối
+    // 5. Nút điều phối hàng đợi
     if (g_isWorkerRunning.load()) {
         ImGui::BeginDisabled();
         ImGui::Button(u8"Đang xử lý...", ImVec2(140, 32));
@@ -110,24 +131,33 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
 
     ImGui::Spacing();
 
-    // 6. Bảng danh sách hàng đợi
+    // 6. Bảng danh sách hàng đợi (Cột Tiêu đề & Thời lượng)
     ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY;
-    if (ImGui::BeginTable("DownloadQueueTable", 6, flags, ImVec2(0, -1))) {
+    if (ImGui::BeginTable("DownloadQueueTable", 7, flags, ImVec2(0, -1))) {
         ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 35.0f);
-        ImGui::TableSetupColumn(u8"Định dạng / Độ phân giải", ImGuiTableColumnFlags_WidthFixed, 180.0f);
-        ImGui::TableSetupColumn(u8"Địa chỉ URL", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn(u8"Tiến độ", ImGuiTableColumnFlags_WidthFixed, 140.0f);
-        ImGui::TableSetupColumn(u8"Tốc độ / ETA", ImGuiTableColumnFlags_WidthFixed, 140.0f);
-        ImGui::TableSetupColumn(u8"Trạng thái", ImGuiTableColumnFlags_WidthFixed, 110.0f);
+        ImGui::TableSetupColumn(u8"Định dạng", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+        ImGui::TableSetupColumn(u8"Tiêu đề Video / Thời lượng", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn(u8"Tiến độ", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+        ImGui::TableSetupColumn(u8"Tốc độ / ETA", ImGuiTableColumnFlags_WidthFixed, 130.0f);
+        ImGui::TableSetupColumn(u8"Trạng thái", ImGuiTableColumnFlags_WidthFixed, 100.0f);
+        ImGui::TableSetupColumn(u8"Thao tác", ImGuiTableColumnFlags_WidthFixed, 120.0f);
         ImGui::TableHeadersRow();
 
-        std::lock_guard<std::mutex> lock(g_queueMutex);
-        for (const auto& item : g_queue) {
-            ImGui::TableNextRow();
+        std::vector<DownloadTask> queueCopy;
+        {
+            std::lock_guard<std::mutex> lock(g_queueMutex);
+            queueCopy = g_queue;
+        }
 
+        for (const auto& item : queueCopy) {
+            ImGui::TableNextRow();
+            ImGui::PushID(item.id);
+
+            // Cột 0: ID
             ImGui::TableSetColumnIndex(0);
             ImGui::Text("%d", item.id);
 
+            // Cột 1: Định dạng / Độ phân giải
             ImGui::TableSetColumnIndex(1);
             if (item.type == 1) {
                 ImGui::Text("Audio MP3");
@@ -135,14 +165,24 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
                 ImGui::Text("MP4 | %s", g_resNames[item.resIndex]);
             }
 
+            // Cột 2: Tiêu đề video + Thời lượng (kèm Tooltip hiển thị URL khi hover)
             ImGui::TableSetColumnIndex(2);
-            ImGui::TextUnformatted(item.url.c_str());
+            if (item.title == "Đang lấy thông tin...") {
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", item.title.c_str());
+            } else {
+                ImGui::Text("%s [%s]", item.title.c_str(), item.duration.c_str());
+            }
+            if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s", item.url.c_str());
+            }
 
+            // Cột 3: Progress Bar mini
             ImGui::TableSetColumnIndex(3);
             char progOverlay[32];
             snprintf(progOverlay, sizeof(progOverlay), "%.1f%%", item.progress * 100.0f);
             ImGui::ProgressBar(item.progress, ImVec2(-1.0f, 15.0f), progOverlay);
 
+            // Cột 4: Tốc độ & ETA
             ImGui::TableSetColumnIndex(4);
             if (item.status == TaskStatus::Downloading || item.eta == "Archive") {
                 ImGui::Text("%s | %s", item.speed.c_str(), item.eta.c_str());
@@ -150,6 +190,7 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
                 ImGui::TextDisabled("--");
             }
 
+            // Cột 5: Trạng thái
             ImGui::TableSetColumnIndex(5);
             switch (item.status) {
                 case TaskStatus::Queued:
@@ -172,6 +213,30 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
                     ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f), u8"Đã dừng");
                     break;
             }
+
+            // Cột 6: Thao tác riêng theo từng dòng
+            ImGui::TableSetColumnIndex(6);
+            if (item.status == TaskStatus::Failed || item.status == TaskStatus::Stopped) {
+                if (ImGui::SmallButton(u8"Thử lại")) {
+                    RetryTask(item.id);
+                }
+                ImGui::SameLine();
+                if (ImGui::SmallButton(u8"Xóa")) {
+                    DeleteTask(item.id);
+                }
+            } else if (item.status == TaskStatus::Queued) {
+                if (ImGui::SmallButton(u8"Xóa")) {
+                    DeleteTask(item.id);
+                }
+            } else if (item.status == TaskStatus::Completed) {
+                if (ImGui::SmallButton(u8"Mở thư mục")) {
+                    ShellExecuteA(NULL, "open", g_savePathBuf, NULL, NULL, SW_SHOWDEFAULT);
+                }
+            } else {
+                ImGui::TextDisabled("...");
+            }
+
+            ImGui::PopID();
         }
         ImGui::EndTable();
     }
