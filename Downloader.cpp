@@ -72,6 +72,36 @@ static std::string FormatSecondsToTime(int totalSeconds) {
     return oss.str();
 }
 
+// Hàm chuyển đổi các ký tự Unicode escaped (\uXXXX) về chuỗi UTF-8 chuẩn
+static std::string DecodeUnicodeEscape(const std::string& input) {
+    std::string output = "";
+    size_t i = 0;
+    while (i < input.length()) {
+        if (input[i] == '\\' && i + 5 < input.length() && input[i + 1] == 'u') {
+            std::string hexStr = input.substr(i + 2, 4);
+            char* endPtr = nullptr;
+            unsigned long code = strtoul(hexStr.c_str(), &endPtr, 16);
+            if (endPtr != hexStr.c_str()) {
+                // Mã hóa codepoint UTF-16/UCS-2 sang UTF-8
+                if (code <= 0x7F) {
+                    output += static_cast<char>(code);
+                } else if (code <= 0x7FF) {
+                    output += static_cast<char>(0xC0 | ((code >> 6) & 0x1F));
+                    output += static_cast<char>(0x80 | (code & 0x3F));
+                } else {
+                    output += static_cast<char>(0xE0 | ((code >> 12) & 0x0F));
+                    output += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+                    output += static_cast<char>(0x80 | (code & 0x3F));
+                }
+                i += 6;
+                continue;
+            }
+        }
+        output += input[i++];
+    }
+    return output;
+}
+
 // Luồng ngầm fetch tiêu đề và thời lượng bằng --dump-json
 static void FetchMetadataWorker(int taskId, std::string url) {
     HANDLE hReadPipe, hWritePipe;
@@ -85,7 +115,8 @@ static void FetchMetadataWorker(int taskId, std::string url) {
     si.wShowWindow = SW_HIDE;
 
     PROCESS_INFORMATION pi = { 0 };
-    std::string cmd = "yt-dlp.exe --dump-json --flat-playlist --skip-download --no-playlist \"" + url + "\"";
+    // Thêm cờ --encoding utf-8 để ép yt-dlp trả về text UTF-8 chuẩn
+    std::string cmd = "yt-dlp.exe --encoding utf-8 --dump-json --flat-playlist --skip-download --no-playlist \"" + url + "\"";
 
     if (!CreateProcessA(NULL, &cmd[0], NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
         CloseHandle(hReadPipe);
@@ -117,13 +148,18 @@ static void FetchMetadataWorker(int taskId, std::string url) {
     std::smatch titleMatch;
     if (std::regex_search(jsonOutput, titleMatch, titleRegex)) {
         extractedTitle = titleMatch[1].str();
-        // Xử lý escape escape cơ bản
+        
+        // Gỡ bỏ escape ký tự đặc biệt
         size_t p;
         while ((p = extractedTitle.find("\\\"")) != std::string::npos) extractedTitle.replace(p, 2, "\"");
         while ((p = extractedTitle.find("\\\\")) != std::string::npos) extractedTitle.replace(p, 2, "\\");
+        while ((p = extractedTitle.find("\\/")) != std::string::npos) extractedTitle.replace(p, 2, "/");
+
+        // Decode toàn bộ mã \uXXXX về Tiếng Việt UTF-8
+        extractedTitle = DecodeUnicodeEscape(extractedTitle);
     }
 
-    // Trích xuất "duration": 123 hoặc "duration": 123.0
+    // Trích xuất "duration": 123 hoặc 123.0
     std::regex durationRegex(R"raw("duration"\s*:\s*(\d+(?:\.\d+)?))raw");
     std::smatch durMatch;
     if (std::regex_search(jsonOutput, durMatch, durationRegex)) {
@@ -460,3 +496,4 @@ void UpdateYtDlpAsync() {
     }
     std::thread(UpdateWorkerThread).detach();
 }
+
