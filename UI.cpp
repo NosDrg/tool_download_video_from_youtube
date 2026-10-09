@@ -8,6 +8,7 @@ static char g_multiUrlBuf[16384] = "";
 static int g_selectedType = 0;
 static int g_selectedRes = 0;
 static bool g_useArchive = true;
+static bool g_allowPlaylist = false; // Checkbox cho phép tải playlist
 
 void InitUI() {
     CreateDirectoryA(g_savePathBuf, NULL);
@@ -69,22 +70,23 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
     // 3. Tùy chọn định dạng & độ phân giải
     ImGui::Text(u8"Định dạng:");
     ImGui::SameLine();
-    ImGui::RadioButton(u8"Video MP4", &g_selectedType, 0);
-    ImGui::SameLine();
-    ImGui::RadioButton(u8"Audio MP3", &g_selectedType, 1);
+    ImGui::PushItemWidth(170);
+    ImGui::Combo("##FormatCombo", &g_selectedType, g_formatNames, g_formatCount);
+    ImGui::PopItemWidth();
 
-    if (g_selectedType == 0) {
-        ImGui::SameLine(280);
+    // Chỉ hiển thị chọn độ phân giải khi chọn Video (MP4, MKV, WEBM - tương ứng index 0, 1, 2)
+    if (g_selectedType <= 2) {
+        ImGui::SameLine();
         ImGui::Text(u8"Chất lượng:");
         ImGui::SameLine();
-        ImGui::PushItemWidth(170);
+        ImGui::PushItemWidth(150);
         ImGui::Combo("##ResCombo", &g_selectedRes, g_resNames, 6);
         ImGui::PopItemWidth();
     }
 
     ImGui::SameLine(600);
     if (ImGui::Button(u8"Thêm vào Hàng đợi", ImVec2(160, 26))) {
-        EnqueueUrls(g_multiUrlBuf, g_selectedType, g_selectedRes);
+        EnqueueUrls(g_multiUrlBuf, g_selectedType, g_selectedRes, g_allowPlaylist);
         g_multiUrlBuf[0] = '\0';
     }
     ImGui::SameLine();
@@ -92,9 +94,11 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
         g_multiUrlBuf[0] = '\0';
     }
 
-    // 4. Checkbox tùy chọn
+    // 4. Các checkbox tùy chọn
     ImGui::Spacing();
     ImGui::Checkbox(u8"Chống tải trùng lặp (archive.txt)", &g_useArchive);
+    ImGui::SameLine(360);
+    ImGui::Checkbox(u8"Tải cả Playlist (Danh sách phát)", &g_allowPlaylist);
     ImGui::Separator();
 
     // 5. Nút điều phối hàng đợi
@@ -131,11 +135,11 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
 
     ImGui::Spacing();
 
-    // 6. Bảng danh sách hàng đợi (Cột Tiêu đề & Thời lượng)
+    // 6. Bảng danh sách hàng đợi
     ImGuiTableFlags flags = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY;
     if (ImGui::BeginTable("DownloadQueueTable", 7, flags, ImVec2(0, -1))) {
         ImGui::TableSetupColumn("ID", ImGuiTableColumnFlags_WidthFixed, 35.0f);
-        ImGui::TableSetupColumn(u8"Định dạng", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+        ImGui::TableSetupColumn(u8"Định dạng", ImGuiTableColumnFlags_WidthFixed, 160.0f);
         ImGui::TableSetupColumn(u8"Tiêu đề Video / Thời lượng", ImGuiTableColumnFlags_WidthStretch);
         ImGui::TableSetupColumn(u8"Tiến độ", ImGuiTableColumnFlags_WidthFixed, 130.0f);
         ImGui::TableSetupColumn(u8"Tốc độ / ETA", ImGuiTableColumnFlags_WidthFixed, 130.0f);
@@ -157,15 +161,20 @@ void RenderDownloaderUI(HWND hWnd, int windowWidth, int windowHeight) {
             ImGui::TableSetColumnIndex(0);
             ImGui::Text("%d", item.id);
 
-            // Cột 1: Định dạng / Độ phân giải
+            // Cột 1: Định dạng / Độ phân giải + Tag Playlist
             ImGui::TableSetColumnIndex(1);
-            if (item.type == 1) {
-                ImGui::Text("Audio MP3");
+            std::string typeStr = "";
+            if (item.type >= 3) {
+                typeStr = g_formatNames[item.type]; // MP3, WAV, FLAC, M4A
             } else {
-                ImGui::Text("MP4 | %s", g_resNames[item.resIndex]);
+                typeStr = std::string(g_formatNames[item.type]) + " | " + g_resNames[item.resIndex];
             }
+            if (item.allowPlaylist) {
+                typeStr += " [List]";
+            }
+            ImGui::Text("%s", typeStr.c_str());
 
-            // Cột 2: Tiêu đề video + Thời lượng (kèm Tooltip hiển thị URL khi hover)
+            // Cột 2: Tiêu đề video + Thời lượng
             ImGui::TableSetColumnIndex(2);
             if (item.title == "Đang lấy thông tin...") {
                 ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", item.title.c_str());

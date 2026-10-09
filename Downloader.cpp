@@ -30,6 +30,17 @@ const char* g_resNames[] = {
     "SD (480p)"
 };
 
+const char* g_formatNames[] = {
+    "MP4 (Video)",
+    "MKV (Video)",
+    "WEBM (Video)",
+    "MP3 (Audio)",
+    "WAV (Audio Lossless)",
+    "FLAC (Audio Lossless)",
+    "M4A (Audio)"
+};
+const int g_formatCount = 7;
+
 void BrowseDestinationFolder(char* outPath, size_t maxLen) {
     BROWSEINFOA bi = { 0 };
     bi.lpszTitle = "Chọn thư mục lưu trữ danh sách tải";
@@ -72,7 +83,6 @@ static std::string FormatSecondsToTime(int totalSeconds) {
     return oss.str();
 }
 
-// Hàm chuyển đổi các ký tự Unicode escaped (\uXXXX) về chuỗi UTF-8 chuẩn
 static std::string DecodeUnicodeEscape(const std::string& input) {
     std::string output = "";
     size_t i = 0;
@@ -82,7 +92,6 @@ static std::string DecodeUnicodeEscape(const std::string& input) {
             char* endPtr = nullptr;
             unsigned long code = strtoul(hexStr.c_str(), &endPtr, 16);
             if (endPtr != hexStr.c_str()) {
-                // Mã hóa codepoint UTF-16/UCS-2 sang UTF-8
                 if (code <= 0x7F) {
                     output += static_cast<char>(code);
                 } else if (code <= 0x7FF) {
@@ -102,8 +111,7 @@ static std::string DecodeUnicodeEscape(const std::string& input) {
     return output;
 }
 
-// Luồng ngầm fetch tiêu đề và thời lượng bằng --dump-json
-static void FetchMetadataWorker(int taskId, std::string url) {
+static void FetchMetadataWorker(int taskId, std::string url, bool allowPlaylist) {
     HANDLE hReadPipe, hWritePipe;
     SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
     if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) return;
@@ -115,8 +123,14 @@ static void FetchMetadataWorker(int taskId, std::string url) {
     si.wShowWindow = SW_HIDE;
 
     PROCESS_INFORMATION pi = { 0 };
-    // Thêm cờ --encoding utf-8 để ép yt-dlp trả về text UTF-8 chuẩn
-    std::string cmd = "yt-dlp.exe --encoding utf-8 --dump-json --flat-playlist --skip-download --no-playlist \"" + url + "\"";
+
+    // Nếu là Playlist: dùng --dump-single-json để gom toàn bộ playlist thành 1 object JSON duy nhất chứa "title" của playlist và "playlist_count"
+    std::string cmd = "yt-dlp.exe --encoding utf-8 --skip-download ";
+    if (allowPlaylist) {
+        cmd += "--flat-playlist --dump-single-json \"" + url + "\"";
+    } else {
+        cmd += "--no-playlist --dump-json \"" + url + "\"";
+    }
 
     if (!CreateProcessA(NULL, &cmd[0], NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
         CloseHandle(hReadPipe);
@@ -126,14 +140,14 @@ static void FetchMetadataWorker(int taskId, std::string url) {
     CloseHandle(hWritePipe);
 
     std::string jsonOutput = "";
-    char buffer[1024];
+    char buffer[2048];
     DWORD bytesRead;
     while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, NULL) && bytesRead > 0) {
         buffer[bytesRead] = '\0';
         jsonOutput += buffer;
     }
 
-    WaitForSingleObject(pi.hProcess, INFINITE);
+    WaitForSingleObject(pi.hProcess, 5000);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(hReadPipe);
@@ -141,32 +155,36 @@ static void FetchMetadataWorker(int taskId, std::string url) {
     if (jsonOutput.empty()) return;
 
     std::string extractedTitle = "";
-    std::string extractedDuration = "--:--";
+    std::string extractedDuration = allowPlaylist ? "Playlist" : "--:--";
 
-    // Trích xuất "title": "..."
+    // 1. Trích xuất Title chung
     std::regex titleRegex(R"raw("title"\s*:\s*"((?:\\.|[^"\\])*)")raw");
     std::smatch titleMatch;
     if (std::regex_search(jsonOutput, titleMatch, titleRegex)) {
         extractedTitle = titleMatch[1].str();
-        
-        // Gỡ bỏ escape ký tự đặc biệt
         size_t p;
         while ((p = extractedTitle.find("\\\"")) != std::string::npos) extractedTitle.replace(p, 2, "\"");
         while ((p = extractedTitle.find("\\\\")) != std::string::npos) extractedTitle.replace(p, 2, "\\");
         while ((p = extractedTitle.find("\\/")) != std::string::npos) extractedTitle.replace(p, 2, "/");
-
-        // Decode toàn bộ mã \uXXXX về Tiếng Việt UTF-8
         extractedTitle = DecodeUnicodeEscape(extractedTitle);
     }
 
-    // Trích xuất "duration": 123 hoặc 123.0
-    std::regex durationRegex(R"raw("duration"\s*:\s*(\d+(?:\.\d+)?))raw");
-    std::smatch durMatch;
-    if (std::regex_search(jsonOutput, durMatch, durationRegex)) {
-        try {
-            int secs = static_cast<int>(std::stof(durMatch[1].str()));
-            extractedDuration = FormatSecondsToTime(secs);
-        } catch (...) {}
+    // 2. Trích xuất thời lượng hoặc số lượng video trong playlist
+    if (allowPlaylist) {
+        std::regex countRegex(R"raw("playlist_count"\s*:\s*(\d+))raw");
+        std::smatch countMatch;
+        if (std::regex_search(jsonOutput, countMatch, countRegex)) {
+            extractedDuration = countMatch[1].str() + " videos";
+        }
+    } else {
+        std::regex durationRegex(R"raw("duration"\s*:\s*(\d+(?:\.\d+)?))raw");
+        std::smatch durMatch;
+        if (std::regex_search(jsonOutput, durMatch, durationRegex)) {
+            try {
+                int secs = static_cast<int>(std::stof(durMatch[1].str()));
+                extractedDuration = FormatSecondsToTime(secs);
+            } catch (...) {}
+        }
     }
 
     if (!extractedTitle.empty()) {
@@ -182,10 +200,23 @@ static void FetchMetadataWorker(int taskId, std::string url) {
 }
 
 static std::string GetFormatString(int type, int resIndex) {
-    if (type == 1) {
-        return "-x --audio-format mp3 ";
+    // 0: MP4, 1: MKV, 2: WEBM
+    // 3: MP3, 4: WAV, 5: FLAC, 6: M4A
+    
+    // Xử lý Audio
+    if (type >= 3) {
+        std::string audioExt = "mp3";
+        switch (type) {
+            case 3: audioExt = "mp3"; break;
+            case 4: audioExt = "wav"; break;
+            case 5: audioExt = "flac"; break;
+            case 6: audioExt = "m4a"; break;
+        }
+        return "-x --audio-format " + audioExt + " ";
     }
 
+    // Xử lý Video (MP4, MKV, WEBM)
+    std::string container = (type == 1) ? "mkv" : ((type == 2) ? "webm" : "mp4");
     std::string heightLimit = "";
     switch (resIndex) {
         case 1: heightLimit = "2160"; break;
@@ -197,9 +228,9 @@ static std::string GetFormatString(int type, int resIndex) {
     }
 
     if (!heightLimit.empty()) {
-        return "-f \"bestvideo[height<=" + heightLimit + "]+bestaudio/best[height<=" + heightLimit + "]\" --merge-output-format mp4 ";
+        return "-f \"bestvideo[height<=" + heightLimit + "]+bestaudio/best[height<=" + heightLimit + "]\" --merge-output-format " + container + " ";
     }
-    return "-f bestvideo*+bestaudio/best --merge-output-format mp4 ";
+    return "-f bestvideo*+bestaudio/best --merge-output-format " + container + " ";
 }
 
 static bool ExecuteSingleDownload(DownloadTask& task, const std::string& savePath, bool useArchive) {
@@ -215,7 +246,13 @@ static bool ExecuteSingleDownload(DownloadTask& task, const std::string& savePat
 
     PROCESS_INFORMATION pi = { 0 };
 
-    std::string cmd = "yt-dlp.exe --newline --no-playlist -P \"" + savePath + "\" ";
+    std::string cmd = "yt-dlp.exe --newline -P \"" + savePath + "\" ";
+    
+    // Nếu KHÔNG cho phép playlist thì mới gắn cờ --no-playlist
+    if (!task.allowPlaylist) {
+        cmd += "--no-playlist ";
+    }
+
     if (useArchive) {
         cmd += "--download-archive \"" + savePath + "\\archive.txt\" ";
     }
@@ -351,7 +388,7 @@ void StartQueueWorker(const std::string& savePath, bool useArchive) {
     std::thread(QueueWorkerLoop, savePath, useArchive).detach();
 }
 
-void EnqueueUrls(const std::string& multiUrlText, int type, int resIndex) {
+void EnqueueUrls(const std::string& multiUrlText, int type, int resIndex, bool allowPlaylist) {
     std::stringstream ss(multiUrlText);
     std::string line;
     std::vector<std::pair<int, std::string>> tasksToFetch;
@@ -366,9 +403,10 @@ void EnqueueUrls(const std::string& multiUrlText, int type, int resIndex) {
                 task.id = g_nextTaskId++;
                 task.url = line;
                 task.title = "Đang lấy thông tin...";
-                task.duration = "--:--";
+                task.duration = allowPlaylist ? "Playlist" : "--:--";
                 task.type = type;
                 task.resIndex = resIndex;
+                task.allowPlaylist = allowPlaylist;
                 task.status = TaskStatus::Queued;
                 g_queue.push_back(task);
                 tasksToFetch.push_back({task.id, task.url});
@@ -376,9 +414,8 @@ void EnqueueUrls(const std::string& multiUrlText, int type, int resIndex) {
         }
     }
 
-    // Khởi chạy các luồng tách biệt để fetch metadata ngầm mà không giật lag UI
     for (const auto& item : tasksToFetch) {
-        std::thread(FetchMetadataWorker, item.first, item.second).detach();
+        std::thread(FetchMetadataWorker, item.first, item.second, allowPlaylist).detach();
     }
 }
 
@@ -399,6 +436,7 @@ void ClearAllTasks() {
 
 void RetryTask(int taskId) {
     std::string urlToRetry = "";
+    bool allowPl = false;
     {
         std::lock_guard<std::mutex> lock(g_queueMutex);
         for (auto& item : g_queue) {
@@ -407,6 +445,7 @@ void RetryTask(int taskId) {
                 item.progress = 0.0f;
                 item.speed = "--";
                 item.eta = "--";
+                allowPl = item.allowPlaylist;
                 if (item.title == "Đang lấy thông tin..." || item.title.empty()) {
                     urlToRetry = item.url;
                 }
@@ -415,7 +454,7 @@ void RetryTask(int taskId) {
         }
     }
     if (!urlToRetry.empty()) {
-        std::thread(FetchMetadataWorker, taskId, urlToRetry).detach();
+        std::thread(FetchMetadataWorker, taskId, urlToRetry, allowPl).detach();
     }
 }
 
@@ -496,4 +535,3 @@ void UpdateYtDlpAsync() {
     }
     std::thread(UpdateWorkerThread).detach();
 }
-

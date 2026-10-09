@@ -14,6 +14,7 @@ struct DownloadTask {
     std::string duration = "--:--";
     int type;       // 0: MP4, 1: MP3
     int resIndex;   // 0: Best, 1: 4K, 2: 2K, 3: 1080p, 4: 720p, 5: 480p
+    bool allowPlaylist = false; // Cho phép tải toàn bộ playlist
     float progress = 0.0f;
     std::string speed = "--";
     std::string eta = "--";
@@ -26,13 +27,15 @@ extern int g_nextTaskId;
 extern std::atomic<bool> g_isWorkerRunning;
 extern std::atomic<bool> g_stopRequested;
 extern const char* g_resNames[];
+extern const char* g_formatNames[];
+extern const int g_formatCount;
 
-// Quản lý trạng thái cập nhật yt-dlp
+// Quản lý cập nhật yt-dlp
 extern std::atomic<bool> g_isUpdatingYtDlp;
 extern std::mutex g_updateMutex;
 extern std::string g_updateStatusMsg;
 
-void EnqueueUrls(const std::string& multiUrlText, int type, int resIndex);
+void EnqueueUrls(const std::string& multiUrlText, int type, int resIndex, bool allowPlaylist);
 void StartQueueWorker(const std::string& savePath, bool useArchive);
 void AbortCurrentDownload();
 void ClearCompletedTasks();
