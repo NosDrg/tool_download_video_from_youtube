@@ -10,7 +10,7 @@
         android:name="com.chaquo.python.android.PyApplication"
         android:allowBackup="true"
         android:icon="@android:drawable/sym_def_app_icon"
-        android:label="Media Downloader"
+        android:label="Trình tải video"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 

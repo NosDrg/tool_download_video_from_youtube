@@ -44,6 +44,15 @@ class DownloaderRepository(private val context: Context) {
                 )
             }
 
+            val subList = mutableListOf<SubtitleItem>()
+            val subsArr = json.optJSONArray("subtitles")
+            if (subsArr != null) {
+                for (i in 0 until subsArr.length()) {
+                    val s = subsArr.getJSONObject(i)
+                    subList.add(SubtitleItem(s.getString("code"), s.getString("name")))
+                }
+            }
+
             Result.success(
                 MediaMetadata(
                     title = json.getString("title"),
@@ -51,6 +60,7 @@ class DownloaderRepository(private val context: Context) {
                     channel = json.getString("channel"),
                     duration = json.getString("duration"),
                     formats = formatList,
+                    subtitles = subList,
                     isPlaylist = json.optBoolean("is_playlist", false)
                 )
             )
@@ -63,6 +73,7 @@ class DownloaderRepository(private val context: Context) {
         url: String,
         formatItem: FormatItem,
         downloadPlaylist: Boolean,
+        subLang: String?,
         customFolderUri: Uri?,
         cancelToken: CancelToken,
         callback: DownloadCallback
@@ -82,6 +93,7 @@ class DownloaderRepository(private val context: Context) {
                 formatType,
                 height,
                 downloadPlaylist,
+                subLang,
                 cancelToken,
                 object {
                     @Suppress("unused")
@@ -98,8 +110,7 @@ class DownloaderRepository(private val context: Context) {
             if (status == "playlist_completed") {
                 val cacheFolder = File(cacheDir)
                 val files = cacheFolder.listFiles { f ->
-                    if (isAudio) f.extension.equals("m4a", true)
-                    else f.extension.equals("mp4", true)
+                    if (isAudio) f.extension.equals("m4a", true) else f.extension.equals("mp4", true)
                 } ?: emptyArray()
 
                 var savedCount = 0
@@ -112,26 +123,33 @@ class DownloaderRepository(private val context: Context) {
                     }
                     if (uri != null) savedCount++
                 }
-
-                callback.onSuccess("Đã lưu $savedCount tệp từ Playlist vào máy.")
+                callback.onSuccess("Da luu $savedCount tep tu Playlist.")
                 return@withContext
             }
 
             val finalFile: File
             if (status == "mux_required") {
-                callback.onProgress(100f, "Đang ghép...", "Đang ghép video và audio bằng MediaMuxer")
+                callback.onProgress(100f, "Dang ghep...", "Dang ghep luong MediaMuxer")
                 val vFile = File(resJson.getString("video_path"))
                 val aFile = File(resJson.getString("audio_path"))
                 val mergedFile = File(cacheDir, "completed_video_${System.currentTimeMillis()}.mp4")
 
                 val muxResult = MediaMuxerHelper.mux(vFile, aFile, mergedFile)
                 if (muxResult.isFailure) {
-                    callback.onError("Lỗi ghép MediaMuxer: ${muxResult.exceptionOrNull()?.message}")
+                    callback.onError("Loi MediaMuxer: ${muxResult.exceptionOrNull()?.message}")
                     return@withContext
                 }
                 finalFile = muxResult.getOrThrow()
             } else {
                 finalFile = File(resJson.getString("file_path"))
+            }
+
+            val subPath = resJson.optString("sub_path", "")
+            if (subPath.isNotBlank()) {
+                val subFile = File(subPath)
+                if (subFile.exists()) {
+                    StorageHelper.exportSubtitleToPublic(context, subFile, finalFile.nameWithoutExtension, customFolderUri)
+                }
             }
 
             val finalUri = if (customFolderUri != null) {
@@ -144,18 +162,17 @@ class DownloaderRepository(private val context: Context) {
             if (finalUri != null) {
                 callback.onSuccess(finalUri.toString())
             } else {
-                callback.onError("Không thể lưu file vào bộ nhớ thiết bị.")
+                callback.onError("Khong the luu file vao bo nho may.")
             }
-
         } catch (e: PyException) {
             val msg = e.message ?: ""
-            if (msg.contains("DownloadInterruptedException") || msg.contains("hủy")) {
+            if (msg.contains("DownloadInterruptedException") || msg.contains("huy") || msg.contains("hủy")) {
                 callback.onCanceled()
             } else {
                 callback.onError(msg)
             }
         } catch (e: Exception) {
-            callback.onError(e.localizedMessage ?: "Lỗi hệ thống")
+            callback.onError(e.localizedMessage ?: "Loi he thong")
         }
     }
 }

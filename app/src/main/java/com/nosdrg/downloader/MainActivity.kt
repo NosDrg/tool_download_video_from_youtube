@@ -1,5 +1,6 @@
 package com.nosdrg.downloader
 
+import android.Manifest
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -53,19 +54,19 @@ class MainActivity : ComponentActivity() {
 fun DownloaderScreen(viewModel: DownloadViewModel) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsState()
+    var inputUrl by remember { mutableStateOf("") }
+    var expandedFormatDropdown by remember { mutableStateOf(false) }
+    var expandedSubDropdown by remember { mutableStateOf(false) }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
-    ) { /* Quyền đã được phản hồi */ }
+    ) { }
 
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
     }
-
-    var inputUrl by remember { mutableStateOf("") }
-    var expandedDropdown by remember { mutableStateOf(false) }
 
     val folderPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
@@ -77,7 +78,7 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
             } catch (_: Exception) {}
 
             val rawName = uri.lastPathSegment?.substringAfterLast(":")
-            val displayName = if (!rawName.isNullOrBlank()) rawName else "Thư mục tùy chọn"
+            val displayName = if (!rawName.isNullOrBlank()) rawName else "Thu muc tuy chon"
             viewModel.setCustomFolder(uri, displayName)
         }
     }
@@ -103,11 +104,11 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
                 label = { Text("Dán URL vào đây") },
                 modifier = Modifier.weight(1f),
                 singleLine = true,
-                enabled = state.status != TaskStatus.DOWNLOADING && !state.isAnalyzing
+                enabled = !state.isAnalyzing
             )
             Button(
                 onClick = { viewModel.inspectUrl(inputUrl) },
-                enabled = inputUrl.isNotBlank() && state.status != TaskStatus.DOWNLOADING && !state.isAnalyzing,
+                enabled = inputUrl.isNotBlank() && !state.isAnalyzing,
                 shape = RoundedCornerShape(8.dp),
                 modifier = Modifier.height(56.dp)
             ) {
@@ -141,17 +142,11 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
                     )
                 }
                 Row {
-                    TextButton(
-                        onClick = { folderPicker.launch(null) },
-                        enabled = state.status != TaskStatus.DOWNLOADING
-                    ) {
+                    TextButton(onClick = { folderPicker.launch(null) }) {
                         Text("Thay đổi")
                     }
                     if (state.customFolderUri != null) {
-                        TextButton(
-                            onClick = { viewModel.resetToDefaultFolder() },
-                            enabled = state.status != TaskStatus.DOWNLOADING
-                        ) {
+                        TextButton(onClick = { viewModel.resetToDefaultFolder() }) {
                             Text("Mặc định", color = MaterialTheme.colorScheme.error)
                         }
                     }
@@ -193,7 +188,7 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
-                    Text("Kênh: ${meta.channel}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Kenh: ${meta.channel}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
                     if (meta.isPlaylist) {
                         Surface(
@@ -216,8 +211,7 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
                                 ) {
                                     RadioButton(
                                         selected = !state.downloadEntirePlaylist,
-                                        onClick = { viewModel.setDownloadEntirePlaylist(false) },
-                                        enabled = state.status != TaskStatus.DOWNLOADING
+                                        onClick = { viewModel.setDownloadEntirePlaylist(false) }
                                     )
                                     Text("Chỉ tải video này", fontSize = 14.sp)
                                 }
@@ -229,173 +223,200 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
                                 ) {
                                     RadioButton(
                                         selected = state.downloadEntirePlaylist,
-                                        onClick = { viewModel.setDownloadEntirePlaylist(true) },
-                                        enabled = state.status != TaskStatus.DOWNLOADING
+                                        onClick = { viewModel.setDownloadEntirePlaylist(true) }
                                     )
-                                    Text("Tải toàn bộ Playlist", fontSize = 14.sp)
+                                    Text("ải toàn bộ Playlist", fontSize = 14.sp)
                                 }
                             }
                         }
                     }
 
                     ExposedDropdownMenuBox(
-                        expanded = expandedDropdown,
-                        onExpandedChange = {
-                            if (state.status != TaskStatus.DOWNLOADING) expandedDropdown = it
-                        }
+                        expanded = expandedFormatDropdown,
+                        onExpandedChange = { expandedFormatDropdown = it }
                     ) {
                         OutlinedTextField(
                             value = state.selectedFormat?.label ?: "Chọn định dạng",
                             onValueChange = {},
                             readOnly = true,
                             label = { Text("Định dạng xuất") },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedDropdown) },
-                            modifier = Modifier.menuAnchor().fillMaxWidth(),
-                            enabled = state.status != TaskStatus.DOWNLOADING
+                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedFormatDropdown) },
+                            modifier = Modifier.menuAnchor().fillMaxWidth()
                         )
                         ExposedDropdownMenu(
-                            expanded = expandedDropdown,
-                            onDismissRequest = { expandedDropdown = false }
+                            expanded = expandedFormatDropdown,
+                            onDismissRequest = { expandedFormatDropdown = false }
                         ) {
                             meta.formats.forEach { item ->
                                 DropdownMenuItem(
                                     text = { Text(item.label) },
                                     onClick = {
                                         viewModel.selectFormat(item)
-                                        expandedDropdown = false
+                                        expandedFormatDropdown = false
                                     }
                                 )
                             }
                         }
                     }
 
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = { viewModel.startDownload() },
-                            modifier = Modifier.weight(1f),
-                            enabled = state.status != TaskStatus.DOWNLOADING,
-                            shape = RoundedCornerShape(8.dp)
+                    if (state.selectedFormat?.isAudio == false && meta.subtitles.isNotEmpty()) {
+                        ExposedDropdownMenuBox(
+                            expanded = expandedSubDropdown,
+                            onExpandedChange = { expandedSubDropdown = it }
                         ) {
-                            val btnText = if (state.status == TaskStatus.DOWNLOADING) {
-                                "Đang tải xuống..."
-                            } else if (state.downloadEntirePlaylist) {
-                                "Tải toàn bộ Playlist"
-                            } else {
-                                "Bắt đầu tải"
-                            }
-                            Text(btnText)
-                        }
-
-                        if (state.status == TaskStatus.DOWNLOADING) {
-                            Button(
-                                onClick = { viewModel.abortDownload() },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                shape = RoundedCornerShape(8.dp)
+                            OutlinedTextField(
+                                value = state.selectedSubtitle?.name ?: "Không tải phụ đề",
+                                onValueChange = {},
+                                readOnly = true,
+                                label = { Text("Tải kèm Phụ đề") },
+                                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expandedSubDropdown) },
+                                modifier = Modifier.menuAnchor().fillMaxWidth()
+                            )
+                            ExposedDropdownMenu(
+                                expanded = expandedSubDropdown,
+                                onDismissRequest = { expandedSubDropdown = false }
                             ) {
-                                Text("Dừng")
+                                DropdownMenuItem(
+                                    text = { Text("Không tải phụ đề") },
+                                    onClick = {
+                                        viewModel.selectSubtitle(null)
+                                        expandedSubDropdown = false
+                                    }
+                                )
+                                meta.subtitles.forEach { sub ->
+                                    DropdownMenuItem(
+                                        text = { Text(sub.name) },
+                                        onClick = {
+                                            viewModel.selectSubtitle(sub)
+                                            expandedSubDropdown = false
+                                        }
+                                    )
+                                }
                             }
                         }
+                    }
+
+                    Button(
+                        onClick = { viewModel.addToQueue() },
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Text("Thêm vào hàng đợi tải")
                     }
                 }
             }
         }
 
-        if (state.status == TaskStatus.DOWNLOADING) {
+        if (state.errorMessage.isNotBlank()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEBEE))
             ) {
-                Column(
-                    modifier = Modifier.fillMaxWidth().padding(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                Column(modifier = Modifier.padding(12.dp)) {
+                    Text("Co loi xay ra:", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
+                    Text(state.errorMessage, color = Color.DarkGray, fontSize = 12.sp)
+                }
+            }
+        }
+
+        if (state.queueTasks.isNotEmpty()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("Hàng đợi tải xuống (${state.queueTasks.size})", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                TextButton(onClick = { viewModel.clearCompletedQueue() }) {
+                    Text("Dọn danh sách xong")
+                }
+            }
+
+            state.queueTasks.forEach { task ->
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
                 ) {
-                    if (state.currentDownloadingTitle.isNotBlank()) {
+                    Column(modifier = Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         Text(
-                            text = state.currentDownloadingTitle,
-                            fontWeight = FontWeight.SemiBold,
+                            task.title,
+                            fontWeight = FontWeight.Medium,
                             fontSize = 14.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis
                         )
-                    }
 
-                    LinearProgressIndicator(
-                        progress = { state.progress / 100f },
-                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp))
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text(text = "${state.progress.toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                        Text(text = state.speed, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
-                    }
-                }
-            }
-        }
-
-        when (state.status) {
-            TaskStatus.SUCCESS -> {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9))
-                ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text("Tải thành công!", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold)
-                        Text(state.outputUri, color = Color.DarkGray, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-
-                        val isAudio = state.selectedFormat?.isAudio ?: false
                         Row(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            OutlinedButton(
-                                onClick = {
-                                    StorageHelper.playMediaFile(context, state.outputUri, isAudio)
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(8.dp)
-                            ) {
-                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(4.dp))
-                                Text("Phát ngay")
+                            val statusText = when (task.status) {
+                                QueueStatus.WAITING -> "[Đang chờ]"
+                                QueueStatus.DOWNLOADING -> "[Đang tải] ${task.progress.toInt()}% (${task.speed})"
+                                QueueStatus.SUCCESS -> "[Đã tải xong]"
+                                QueueStatus.FAILED -> "[Thất bại] ${task.errorMessage}"
+                                QueueStatus.CANCELED -> "[Đã dừng]"
+                            }
+                            val statusColor = when (task.status) {
+                                QueueStatus.SUCCESS -> Color(0xFF2E7D32)
+                                QueueStatus.FAILED -> MaterialTheme.colorScheme.error
+                                QueueStatus.DOWNLOADING -> MaterialTheme.colorScheme.primary
+                                else -> Color.Gray
                             }
 
-                            Button(
-                                onClick = {
-                                    StorageHelper.openDownloadFolder(context, state.customFolderUri, isAudio)
-                                },
-                                modifier = Modifier.weight(1f),
-                                shape = RoundedCornerShape(8.dp)
+                            Text(text = statusText, fontSize = 12.sp, color = statusColor)
+
+                            if (task.status != QueueStatus.DOWNLOADING) {
+                                Text(
+                                    text = "Xóa",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.error,
+                                    modifier = Modifier.clickable { viewModel.removeQueueItem(task.id) }
+                                )
+                            }
+                        }
+
+                        if (task.status == QueueStatus.DOWNLOADING) {
+                            LinearProgressIndicator(
+                                progress = { task.progress / 100f },
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                                    .clip(RoundedCornerShape(3.dp))
+                            )
+                        }
+
+                        if (task.status == QueueStatus.SUCCESS && task.outputUri.isNotBlank()) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Text("Mở thư mục")
+                                OutlinedButton(
+                                    onClick = {
+                                        StorageHelper.playMediaFile(context, task.outputUri, task.formatItem.isAudio)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Phát ngay", fontSize = 12.sp)
+                                }
+
+                                Button(
+                                    onClick = {
+                                        StorageHelper.openDownloadFolder(context, task.customFolderUri, task.formatItem.isAudio)
+                                    },
+                                    modifier = Modifier.weight(1f),
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("Mở thư mục", fontSize = 12.sp)
+                                }
                             }
                         }
                     }
                 }
             }
-            TaskStatus.FAILED -> {
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = CardDefaults.cardColors(containerColor = Color(0xFFFFEBEE))
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text("Có lỗi xảy ra:", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                        Text(state.errorMessage, color = Color.DarkGray, fontSize = 12.sp)
-                    }
-                }
-            }
-            TaskStatus.CANCELED -> {
-                Text(state.errorMessage, color = Color.Gray, fontSize = 13.sp)
-            }
-            else -> {}
         }
     }
 }

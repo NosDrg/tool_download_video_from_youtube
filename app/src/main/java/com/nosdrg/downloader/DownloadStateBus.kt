@@ -4,67 +4,69 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-data class DownloadProgressState(
-    val isRunning: Boolean = false,
-    val progress: Float = 0f,
-    val speed: String = "",
-    val currentTitle: String = "",
-    val status: TaskStatus = TaskStatus.IDLE,
-    val errorMessage: String = "",
-    val outputUri: String = ""
-)
+object DownloadQueueBus {
+    private val _queue = MutableStateFlow<List<DownloadTask>>(emptyList())
+    val queue = _queue.asStateFlow()
 
-object DownloadStateBus {
-    private val _state = MutableStateFlow(DownloadProgressState())
-    val state = _state.asStateFlow()
+    fun enqueue(task: DownloadTask) {
+        _queue.update { it + task }
+    }
 
-    fun updateProgress(progress: Float, speed: String, currentTitle: String) {
-        _state.update {
-            it.copy(
-                isRunning = true,
-                progress = progress,
-                speed = speed,
-                currentTitle = currentTitle,
-                status = TaskStatus.DOWNLOADING
-            )
+    fun removeTask(taskId: String) {
+        _queue.update { list -> list.filterNot { it.id == taskId } }
+    }
+
+    fun getNextWaitingTask(): DownloadTask? {
+        return _queue.value.firstOrNull { it.status == QueueStatus.WAITING }
+    }
+
+    fun updateTaskProgress(taskId: String, progress: Float, speed: String, currentTitle: String = "") {
+        _queue.update { list ->
+            list.map { task ->
+                if (task.id == taskId) {
+                    val displayTitle = if (currentTitle.isNotBlank()) currentTitle else task.title
+                    task.copy(
+                        title = displayTitle,
+                        progress = progress,
+                        speed = speed,
+                        status = QueueStatus.DOWNLOADING
+                    )
+                } else task
+            }
         }
     }
 
-    fun setSuccess(outputUri: String) {
-        _state.update {
-            it.copy(
-                isRunning = false,
-                progress = 100f,
-                status = TaskStatus.SUCCESS,
-                outputUri = outputUri,
-                currentTitle = ""
-            )
+    fun setTaskSuccess(taskId: String, outputUri: String) {
+        _queue.update { list ->
+            list.map { task ->
+                if (task.id == taskId) {
+                    task.copy(status = QueueStatus.SUCCESS, progress = 100f, outputUri = outputUri)
+                } else task
+            }
         }
     }
 
-    fun setError(error: String) {
-        _state.update {
-            it.copy(
-                isRunning = false,
-                status = TaskStatus.FAILED,
-                errorMessage = error,
-                currentTitle = ""
-            )
+    fun setTaskFailed(taskId: String, error: String) {
+        _queue.update { list ->
+            list.map { task ->
+                if (task.id == taskId) {
+                    task.copy(status = QueueStatus.FAILED, errorMessage = error)
+                } else task
+            }
         }
     }
 
-    fun setCanceled() {
-        _state.update {
-            it.copy(
-                isRunning = false,
-                status = TaskStatus.CANCELED,
-                errorMessage = "Đã dừng tải về",
-                currentTitle = ""
-            )
+    fun setTaskCanceled(taskId: String) {
+        _queue.update { list ->
+            list.map { task ->
+                if (task.id == taskId) task.copy(status = QueueStatus.CANCELED) else task
+            }
         }
     }
 
-    fun reset() {
-        _state.value = DownloadProgressState()
+    fun clearCompleted() {
+        _queue.update { list ->
+            list.filter { it.status == QueueStatus.DOWNLOADING || it.status == QueueStatus.WAITING }
+        }
     }
 }

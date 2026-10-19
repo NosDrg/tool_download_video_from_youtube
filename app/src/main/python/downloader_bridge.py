@@ -1,5 +1,6 @@
 import json
 import os
+import glob
 import urllib.request
 import yt_dlp
 from mutagen.mp4 import MP4, MP4Cover
@@ -8,9 +9,6 @@ class DownloadInterruptedException(Exception):
     pass
 
 def embed_metadata_to_m4a(file_path, title, artist, thumbnail_url):
-    """
-    Nhúng Title, Artist và Ảnh bìa (Cover Art) vào file M4A bằng Mutagen.
-    """
     try:
         audio = MP4(file_path)
         if title:
@@ -28,16 +26,13 @@ def embed_metadata_to_m4a(file_path, title, artist, thumbnail_url):
                 cover_data = resp.read()
 
             fmt = MP4Cover.FORMAT_PNG if ".png" in thumbnail_url.lower() else MP4Cover.FORMAT_JPEG
-            
             audio['covr'] = [MP4Cover(cover_data, fmt)]
 
         audio.save()
-        print(f"[Mutagen] Đã nhúng metadata và thumbnail thành công: {file_path}")
     except Exception as e:
-        print(f"[Mutagen] Lỗi khi nhúng metadata: {e}")
+        print(f"[Mutagen] Bỏ qua nhúng metadata: {e}")
 
 def clean_url(url):
-    """Chỉ cắt tham số playlist đối với link YouTube đơn lẻ"""
     if ("youtube.com/watch" in url or "youtu.be/" in url) and "&list=" in url:
         return url.split("&list=")[0]
     return url
@@ -56,7 +51,6 @@ def extract_media_info(url):
         'no_warnings': True
     }
 
-    # Chỉ bật player_client riêng khi là YouTube để tránh lỗi trên TikTok/Facebook/Instagram
     if "youtube.com" in url or "youtu.be" in url:
         ydl_opts['extractor_args'] = {'youtube': {'player_client': ['web', 'android']}}
 
@@ -66,7 +60,6 @@ def extract_media_info(url):
             if not info:
                 return json.dumps({"error": "Không thể lấy thông tin URL"})
 
-            # Lấy thumbnail chất lượng cao nhất có thể
             thumbnail = info.get('thumbnail') or ""
             if not thumbnail and info.get('thumbnails'):
                 thumbnail = info['thumbnails'][-1].get('url', '')
@@ -79,7 +72,6 @@ def extract_media_info(url):
             formats = info.get('formats', [])
             video_map = {}
 
-            # Tùy chọn Audio
             audio_format = {
                 "id": "best_audio_m4a",
                 "label": "Audio M4A",
@@ -87,13 +79,12 @@ def extract_media_info(url):
                 "selector": "bestaudio[ext=m4a]/bestaudio/best"
             }
 
-            # Lọc Video đa nền tảng
             for f in formats:
                 height = f.get('height')
                 vcodec = f.get('vcodec') or 'none'
                 ext = f.get('ext', 'mp4')
                 filesize = f.get('filesize') or f.get('filesize_approx') or 0
-                filesize_mb = f" (~{round(filesize / (1024 * 1024), 1)} MB)" if filesize else ""
+                filesize_mb = f" ({round(filesize / (1024 * 1024), 1)} MB)" if filesize else ""
 
                 if height and vcodec != 'none':
                     if height not in video_map or ext == 'mp4':
@@ -114,12 +105,27 @@ def extract_media_info(url):
 
             sorted_videos = [video_map[h] for h in sorted(video_map.keys(), reverse=True)]
 
+            # Bóc tách phụ đề có sẵn (bao gồm cả manual và auto-captions)
+            subtitles_list = []
+            all_subs = {}
+            if info.get('subtitles'):
+                all_subs.update(info['subtitles'])
+            if info.get('automatic_captions'):
+                all_subs.update(info['automatic_captions'])
+
+            # Lọc các ngôn ngữ phổ biến
+            priority_langs = {'vi': 'Tiếng Việt', 'en': 'Tiếng Anh', 'ja': 'Tiếng Nhật', 'ko': 'Tiếng Hàn', 'zh': 'Tiếng Trung'}
+            for code, name in priority_langs.items():
+                if any(code in k for k in all_subs.keys()):
+                    subtitles_list.append({"code": code, "name": name})
+
             result = {
                 "title": info.get('title', 'Media không tiêu đề'),
                 "thumbnail": thumbnail,
                 "channel": info.get('uploader') or info.get('channel') or info.get('creator') or 'Mạng xã hội',
                 "duration": dur_str,
                 "formats": [audio_format] + sorted_videos,
+                "subtitles": subtitles_list,
                 "is_playlist": has_list_param
             }
             return json.dumps(result, ensure_ascii=False)
@@ -127,7 +133,7 @@ def extract_media_info(url):
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
-def download_media_task(url, output_dir, format_type, height=720, download_playlist=False, cancel_token=None, callback=None):
+def download_media_task(url, output_dir, format_type, height=720, download_playlist=False, sub_lang=None, cancel_token=None, callback=None):
     if not download_playlist:
         url = clean_url(url)
 
@@ -160,6 +166,12 @@ def download_media_task(url, output_dir, format_type, height=720, download_playl
         'no_warnings': True
     }
 
+    # Cấu hình tải phụ đề VTT trực tiếp (không dùng FFmpeg)
+    if sub_lang:
+        base_opts['writesubtitles'] = True
+        base_opts['writeautomaticsub'] = True
+        base_opts['subtitleslangs'] = [sub_lang]
+
     if "youtube.com" in url or "youtu.be" in url:
         base_opts['extractor_args'] = {'youtube': {'player_client': ['web', 'android']}}
 
@@ -171,29 +183,11 @@ def download_media_task(url, output_dir, format_type, height=720, download_playl
         opts['format'] = 'bestaudio[ext=m4a]/bestaudio' if format_type == "audio" else f'best[height<={height}][ext=mp4]/best[ext=mp4]/best'
 
         with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            
-            # Ưu tiên lấy thumbnail đuôi JPG từ danh sách thumbnails để chuẩn hóa Cover Art
-            thumb_url = ""
-            thumbnails = info.get('thumbnails') or []
-            for t in reversed(thumbnails):
-                u = t.get('url', '')
-                if '.jpg' in u.lower() or '.jpeg' in u.lower():
-                    thumb_url = u
-                    break
-            if not thumb_url:
-                thumb_url = info.get('thumbnail') or ""
-
-            embed_metadata_to_m4a(
-                file_path=audio_path,
-                title=info.get('title'),
-                artist=info.get('uploader') or info.get('creator') or info.get('channel'),
-                thumbnail_url=thumb_url
-            )
+            ydl.download([url])
 
         return json.dumps({"status": "playlist_completed", "is_audio": (format_type == "audio")})
 
-    # Tải 1 file Audio đơn lẻ kèm Metadata
+    # Tải Audio
     if format_type == "audio":
         audio_path = os.path.join(output_dir, "audio_stream.m4a")
         if os.path.exists(audio_path):
@@ -205,43 +199,49 @@ def download_media_task(url, output_dir, format_type, height=720, download_playl
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            # Nhúng thông tin bìa và nghệ sĩ sau khi file tải xong
-            embed_metadata_to_m4a(
-                file_path=audio_path,
-                title=info.get('title'),
-                artist=info.get('uploader') or info.get('creator'),
-                thumbnail_url=info.get('thumbnail')
-            )
+            thumb_url = info.get('thumbnail') or ""
+            embed_metadata_to_m4a(audio_path, info.get('title'), info.get('uploader'), thumb_url)
 
-        return json.dumps({"status": "ready", "is_audio": True, "file_path": audio_path})
+        return json.dumps({"status": "ready", "is_audio": True, "file_path": audio_path, "sub_path": ""})
 
-    # Tải 1 file Video (Hỗ trợ cả stream Progressive của TikTok/FB lẫn tách luồng DASH)
+    # Tải Video
     video_path = os.path.join(output_dir, "video_stream.mp4")
     audio_path = os.path.join(output_dir, "audio_stream.m4a")
     for p in (video_path, audio_path):
         if os.path.exists(p):
             os.remove(p)
 
-    # 1. Thử lấy Progressive video (TikTok, Facebook, Instagram thường chỉ cần 1 luồng này)
+    # Xóa file phụ đề cũ còn sót trong cache
+    for old_sub in glob.glob(os.path.join(output_dir, "*.vtt")):
+        try: os.remove(old_sub)
+        except Exception: pass
+
     opts_prog = dict(base_opts)
     opts_prog['format'] = f'best[height<={height}][ext=mp4]/best[ext=mp4]/best'
     opts_prog['outtmpl'] = video_path
 
+    is_progressive = False
     try:
         with yt_dlp.YoutubeDL(opts_prog) as ydl:
             info = ydl.extract_info(url, download=True)
-            # Nếu định dạng tải về đã có cả hình lẫn tiếng thì trả về trực tiếp
             if info.get('vcodec') != 'none' and info.get('acodec') != 'none':
-                return json.dumps({"status": "ready", "is_audio": False, "file_path": video_path})
+                is_progressive = True
     except Exception:
-        pass
+        is_progressive = False
 
-    # 2. Nếu là YouTube độ phân giải cao tách luồng -> Tải video stream + audio stream để MediaMuxer ghép
+    # Tìm file phụ đề .vtt vừa tải xuống
+    sub_files = glob.glob(os.path.join(output_dir, "*.vtt"))
+    found_sub_path = sub_files[0] if sub_files else ""
+
+    if is_progressive:
+        return json.dumps({"status": "ready", "is_audio": False, "file_path": video_path, "sub_path": found_sub_path})
+
+    # Nếu cần tách ghép luồng
     opts_v = dict(base_opts)
     opts_v['format'] = f'bestvideo[height<={height}][ext=mp4]/bestvideo'
     opts_v['outtmpl'] = video_path
     with yt_dlp.YoutubeDL(opts_v) as ydl:
-        info_v = ydl.extract_info(url, download=True)
+        ydl.download([url])
 
     opts_a = dict(base_opts)
     opts_a['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
@@ -249,9 +249,13 @@ def download_media_task(url, output_dir, format_type, height=720, download_playl
     with yt_dlp.YoutubeDL(opts_a) as ydl:
         ydl.download([url])
 
+    sub_files = glob.glob(os.path.join(output_dir, "*.vtt"))
+    found_sub_path = sub_files[0] if sub_files else ""
+
     return json.dumps({
         "status": "mux_required",
         "is_audio": False,
         "video_path": video_path,
-        "audio_path": audio_path
+        "audio_path": audio_path,
+        "sub_path": found_sub_path
     })

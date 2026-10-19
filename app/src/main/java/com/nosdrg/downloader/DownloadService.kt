@@ -1,5 +1,6 @@
 package com.nosdrg.downloader
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -7,7 +8,6 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
-import android.net.Uri
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -23,21 +23,14 @@ class DownloadService : Service() {
     private lateinit var repository: DownloaderRepository
     private var cancelToken: CancelToken? = null
     private lateinit var notificationManager: NotificationManager
+    private var isQueueLoopRunning = false
+    private var currentActiveTaskId: String? = null
 
     companion object {
         const val CHANNEL_ID = "channel_media_download"
         const val NOTIFICATION_ID = 1001
-
-        const val ACTION_START = "ACTION_START_DOWNLOAD"
-        const val ACTION_STOP = "ACTION_STOP_DOWNLOAD"
-
-        const val EXTRA_URL = "EXTRA_URL"
-        const val EXTRA_FORMAT_ID = "EXTRA_FORMAT_ID"
-        const val EXTRA_FORMAT_LABEL = "EXTRA_FORMAT_LABEL"
-        const val EXTRA_FORMAT_SELECTOR = "EXTRA_FORMAT_SELECTOR"
-        const val EXTRA_IS_AUDIO = "EXTRA_IS_AUDIO"
-        const val EXTRA_DOWNLOAD_PLAYLIST = "EXTRA_DOWNLOAD_PLAYLIST"
-        const val EXTRA_CUSTOM_FOLDER_URI = "EXTRA_CUSTOM_FOLDER_URI"
+        const val ACTION_PROCESS_QUEUE = "ACTION_PROCESS_QUEUE"
+        const val ACTION_STOP_CURRENT = "ACTION_STOP_CURRENT"
     }
 
     override fun onCreate() {
@@ -49,145 +42,126 @@ class DownloadService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_START -> {
-                val url = intent.getStringExtra(EXTRA_URL) ?: return START_NOT_STICKY
-                val formatId = intent.getStringExtra(EXTRA_FORMAT_ID) ?: ""
-                val formatLabel = intent.getStringExtra(EXTRA_FORMAT_LABEL) ?: ""
-                val formatSelector = intent.getStringExtra(EXTRA_FORMAT_SELECTOR) ?: "720"
-                val isAudio = intent.getBooleanExtra(EXTRA_IS_AUDIO, false)
-                val downloadPlaylist = intent.getBooleanExtra(EXTRA_DOWNLOAD_PLAYLIST, false)
-                val customFolderUriStr = intent.getStringExtra(EXTRA_CUSTOM_FOLDER_URI)
-                val customFolderUri = customFolderUriStr?.let { Uri.parse(it) }
-
-                val formatItem = FormatItem(
-                    id = formatId,
-                    label = formatLabel,
-                    formatSelector = formatSelector,
-                    isAudio = isAudio
-                )
-
-                startForegroundDownload(url, formatItem, downloadPlaylist, customFolderUri)
+            ACTION_PROCESS_QUEUE -> {
+                if (!isQueueLoopRunning) {
+                    isQueueLoopRunning = true
+                    startQueueProcessing()
+                }
             }
-            ACTION_STOP -> {
+            ACTION_STOP_CURRENT -> {
                 cancelToken?.cancel()
-                DownloadStateBus.setCanceled()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                currentActiveTaskId?.let { DownloadQueueBus.setTaskCanceled(it) }
             }
         }
         return START_NOT_STICKY
     }
 
-    private fun startForegroundDownload(
-        url: String,
-        formatItem: FormatItem,
-        downloadPlaylist: Boolean,
-        customFolderUri: Uri?
-    ) {
-        val token = CancelToken()
-        cancelToken = token
-
-        val initialNotification = buildNotification(0, "Đang kết nối...", "Đang chuẩn bị tải")
+    private fun startQueueProcessing() {
+        val initialNotif = buildNotification(0, "Hang doi", "Dang khoi tao...")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, initialNotification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            startForeground(NOTIFICATION_ID, initialNotif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
-            startForeground(NOTIFICATION_ID, initialNotification)
+            startForeground(NOTIFICATION_ID, initialNotif)
         }
 
         serviceScope.launch {
-            repository.downloadMedia(
-                url = url,
-                formatItem = formatItem,
-                downloadPlaylist = downloadPlaylist,
-                customFolderUri = customFolderUri,
-                cancelToken = token,
-                callback = object : DownloaderRepository.DownloadCallback {
-                    override fun onProgress(percent: Float, speed: String, currentTitle: String) {
-                        DownloadStateBus.updateProgress(percent, speed, currentTitle)
-                        notificationManager.notify(
-                            NOTIFICATION_ID,
-                            buildNotification(percent.toInt(), speed, currentTitle.ifBlank { "Đang tải xuống..." })
-                        )
-                    }
-
-                    override fun onSuccess(fileUri: String) {
-                        DownloadStateBus.setSuccess(fileUri)
-                        showCompletedNotification("Tải hoàn tất!", "Tệp đã được lưu an toàn.")
-                        stopForeground(STOP_FOREGROUND_DETACH)
-                        stopSelf()
-                    }
-
-                    override fun onError(error: String) {
-                        DownloadStateBus.setError(error)
-                        showCompletedNotification("Tải thất bại", error)
-                        stopForeground(STOP_FOREGROUND_DETACH)
-                        stopSelf()
-                    }
-
-                    override fun onCanceled() {
-                        DownloadStateBus.setCanceled()
-                        stopForeground(STOP_FOREGROUND_REMOVE)
-                        stopSelf()
-                    }
+            while (true) {
+                val nextTask = DownloadQueueBus.getNextWaitingTask()
+                if (nextTask == null) {
+                    isQueueLoopRunning = false
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                    break
                 }
-            )
+
+                currentActiveTaskId = nextTask.id
+                val token = CancelToken()
+                cancelToken = token
+
+                repository.downloadMedia(
+                    url = nextTask.url,
+                    formatItem = nextTask.formatItem,
+                    downloadPlaylist = nextTask.downloadPlaylist,
+                    subLang = nextTask.subLang,
+                    customFolderUri = nextTask.customFolderUri,
+                    cancelToken = token,
+                    callback = object : DownloaderRepository.DownloadCallback {
+                        override fun onProgress(percent: Float, speed: String, currentTitle: String) {
+                            DownloadQueueBus.updateTaskProgress(nextTask.id, percent, speed, currentTitle)
+                            val title = if (currentTitle.isNotBlank()) currentTitle else nextTask.title
+                            notificationManager.notify(NOTIFICATION_ID, buildNotification(percent.toInt(), speed, title))
+                        }
+
+                        override fun onSuccess(fileUri: String) {
+                            DownloadQueueBus.setTaskSuccess(nextTask.id, fileUri)
+                            showCompletedNotification("Da tai xong", nextTask.title)
+                        }
+
+                        override fun onError(error: String) {
+                            DownloadQueueBus.setTaskFailed(nextTask.id, error)
+                        }
+
+                        override fun onCanceled() {
+                            DownloadQueueBus.setTaskCanceled(nextTask.id)
+                        }
+                    }
+                )
+            }
         }
     }
 
-    private fun buildNotification(progress: Int, speed: String, contentTitle: String): android.app.Notification {
+    private fun buildNotification(progress: Int, speed: String, title: String): Notification {
         val openAppIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
-        val pendingOpenApp = PendingIntent.getActivity(
+        val pOpen = PendingIntent.getActivity(
             this, 0, openAppIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val stopIntent = Intent(this, DownloadService::class.java).apply { action = ACTION_STOP }
-        val pendingStop = PendingIntent.getService(
+        val stopIntent = Intent(this, DownloadService::class.java).apply {
+            action = ACTION_STOP_CURRENT
+        }
+        val pStop = PendingIntent.getService(
             this, 1, stopIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle(contentTitle)
-            .setContentText("$progress% • $speed")
+            .setContentTitle(title)
+            .setContentText("$progress% - $speed")
             .setProgress(100, progress, progress == 0)
             .setOngoing(true)
-            .setContentIntent(pendingOpenApp)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Hủy", pendingStop)
+            .setContentIntent(pOpen)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Dung bai nay", pStop)
             .setSilent(true)
             .build()
     }
 
     private fun showCompletedNotification(title: String, message: String) {
-        val openAppIntent = Intent(this, MainActivity::class.java)
-        val pendingOpenApp = PendingIntent.getActivity(
-            this, 0, openAppIntent,
+        val pOpen = PendingIntent.getActivity(
+            this, 0,
+            Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        val notif = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_download_done)
             .setContentTitle(title)
             .setContentText(message)
             .setAutoCancel(true)
-            .setContentIntent(pendingOpenApp)
+            .setContentIntent(pOpen)
             .build()
-
-        notificationManager.notify(NOTIFICATION_ID + 1, notification)
+        notificationManager.notify(System.currentTimeMillis().toInt(), notif)
     }
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Tác vụ tải Media",
+                "Hang doi tai Media",
                 NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "Hiển thị tiến độ và tốc độ tải video/audio"
-            }
+            )
             notificationManager.createNotificationChannel(channel)
         }
     }

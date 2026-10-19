@@ -140,4 +140,41 @@ object StorageHelper {
             Toast.makeText(context, "Không tìm thấy ứng dụng phát tệp này", Toast.LENGTH_SHORT).show()
         }
     }
+
+    fun exportSubtitleToPublic(context: Context, subFile: File, baseName: String, customFolderUri: Uri? = null) {
+    if (!subFile.exists()) return
+    val fileName = "$baseName.vtt"
+
+    if (customFolderUri != null) {
+        try {
+            val pickedDir = DocumentFile.fromTreeUri(context, customFolderUri) ?: return
+            val newFile = pickedDir.createFile("text/vtt", fileName) ?: return
+            context.contentResolver.openOutputStream(newFile.uri)?.use { out ->
+                FileInputStream(subFile).use { it.copyTo(out) }
+            }
+            subFile.delete()
+        } catch (_: Exception) {}
+        return
+    }
+
+    val contentValues = ContentValues().apply {
+        put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+        put(MediaStore.MediaColumns.MIME_TYPE, "text/vtt")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/MyDownloader")
+        }
+    }
+
+    val collection = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+        MediaStore.Files.getContentUri(MediaStore.VOLUME_EXTERNAL_PRIMARY)
+    } else {
+        MediaStore.Files.getContentUri("external")
+    }
+
+    val uri = context.contentResolver.insert(collection, contentValues) ?: return
+    context.contentResolver.openOutputStream(uri)?.use { out ->
+        FileInputStream(subFile).use { it.copyTo(out) }
+    }
+    subFile.delete()
+}
 }

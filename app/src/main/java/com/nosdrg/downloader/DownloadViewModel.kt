@@ -1,10 +1,11 @@
 package com.nosdrg.downloader
 
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -18,74 +19,47 @@ data class UiState(
     val isAnalyzing: Boolean = false,
     val metadata: MediaMetadata? = null,
     val selectedFormat: FormatItem? = null,
+    val selectedSubtitle: SubtitleItem? = null,
     val downloadEntirePlaylist: Boolean = false,
     val customFolderUri: Uri? = null,
-    val customFolderDisplayName: String = "Mặc định (Music/Movies)",
-    val progress: Float = 0f,
-    val speed: String = "",
-    val currentDownloadingTitle: String = "",
-    val status: TaskStatus = TaskStatus.IDLE,
-    val errorMessage: String = "",
-    val outputUri: String = ""
+    val customFolderDisplayName: String = "Mặc định",
+    val queueTasks: List<DownloadTask> = emptyList(),
+    val errorMessage: String = ""
 )
 
 class DownloadViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository = DownloaderRepository(application)
-    private var downloadJob: Job? = null
-    private var currentCancelToken: CancelToken? = null
-
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-   init {
+    init {
         val savedUri = PreferencesHelper.getCustomFolderUri(application)
         val savedName = PreferencesHelper.getCustomFolderDisplayName(application)
         if (savedUri != null) {
-            _uiState.update {
-                it.copy(customFolderUri = savedUri, customFolderDisplayName = savedName)
-            }
+            _uiState.update { it.copy(customFolderUri = savedUri, customFolderDisplayName = savedName) }
         }
 
         viewModelScope.launch {
-            DownloadStateBus.state.collect { s ->
-                _uiState.update { current ->
-                    current.copy(
-                        progress = s.progress,
-                        speed = s.speed,
-                        currentDownloadingTitle = s.currentTitle,
-                        status = s.status,
-                        errorMessage = s.errorMessage,
-                        outputUri = s.outputUri
-                    )
-                }
+            DownloadQueueBus.queue.collect { q ->
+                _uiState.update { it.copy(queueTasks = q) }
             }
         }
     }
 
     fun setCustomFolder(uri: Uri?, name: String) {
         PreferencesHelper.saveCustomFolder(getApplication(), uri, name)
-        _uiState.update {
-            it.copy(
-                customFolderUri = uri,
-                customFolderDisplayName = name
-            )
-        }
+        _uiState.update { it.copy(customFolderUri = uri, customFolderDisplayName = name) }
     }
 
     fun resetToDefaultFolder() {
-        PreferencesHelper.saveCustomFolder(getApplication(), null, "Mặc định (Music/Movies)")
-        _uiState.update {
-            it.copy(
-                customFolderUri = null,
-                customFolderDisplayName = "Mặc định (Music/Movies)"
-            )
-        }
+        PreferencesHelper.saveCustomFolder(getApplication(), null, "Mac dinh (Music/Movies)")
+        _uiState.update { it.copy(customFolderUri = null, customFolderDisplayName = "Mac dinh (Music/Movies)") }
     }
 
     fun inspectUrl(url: String) {
         if (url.isBlank()) {
-            _uiState.update { it.copy(status = TaskStatus.FAILED, errorMessage = "Vui lòng nhập liên kết") }
+            _uiState.update { it.copy(errorMessage = "Vui long nhap lien ket") }
             return
         }
 
@@ -94,10 +68,10 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                 it.copy(
                     url = url,
                     isAnalyzing = true,
-                    status = TaskStatus.IDLE,
                     errorMessage = "",
                     metadata = null,
                     selectedFormat = null,
+                    selectedSubtitle = null,
                     downloadEntirePlaylist = false
                 )
             }
@@ -112,15 +86,15 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                         it.copy(
                             isAnalyzing = false,
                             metadata = data,
-                            selectedFormat = data.formats.firstOrNull()
+                            selectedFormat = data.formats.firstOrNull(),
+                            selectedSubtitle = null
                         )
                     }
                 }.onFailure { err ->
                     _uiState.update {
                         it.copy(
                             isAnalyzing = false,
-                            status = TaskStatus.FAILED,
-                            errorMessage = err.message ?: "Phân tích URL thất bại"
+                            errorMessage = err.message ?: "Phan tich URL that bai"
                         )
                     }
                 }
@@ -128,8 +102,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                 _uiState.update {
                     it.copy(
                         isAnalyzing = false,
-                        status = TaskStatus.FAILED,
-                        errorMessage = "Quá thời gian kết nối (Timeout). Vui lòng thử lại."
+                        errorMessage = "Qua thoi gian ket noi (Timeout). Vui long thu lai."
                     )
                 }
             }
@@ -140,86 +113,47 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { it.copy(selectedFormat = format) }
     }
 
+    fun selectSubtitle(sub: SubtitleItem?) {
+        _uiState.update { it.copy(selectedSubtitle = sub) }
+    }
+
     fun setDownloadEntirePlaylist(entire: Boolean) {
         _uiState.update { it.copy(downloadEntirePlaylist = entire) }
     }
 
-    fun startDownload() {
+    fun addToQueue() {
         val state = _uiState.value
+        val meta = state.metadata ?: return
         val format = state.selectedFormat ?: return
-        val url = state.url
 
-        downloadJob?.cancel()
-        val token = CancelToken()
-        currentCancelToken = token
+        val newTask = DownloadTask(
+            url = state.url,
+            title = meta.title,
+            thumbnail = meta.thumbnail,
+            formatItem = format,
+            subLang = state.selectedSubtitle?.code,
+            downloadPlaylist = state.downloadEntirePlaylist,
+            customFolderUri = state.customFolderUri
+        )
 
-        _uiState.update {
-            it.copy(
-                progress = 0f,
-                speed = "Đang kết nối...",
-                status = TaskStatus.DOWNLOADING,
-                errorMessage = ""
-            )
+        DownloadQueueBus.enqueue(newTask)
+
+        val intent = Intent(getApplication(), DownloadService::class.java).apply {
+            action = DownloadService.ACTION_PROCESS_QUEUE
         }
-
-        downloadJob = viewModelScope.launch {
-            repository.downloadMedia(
-                url = url,
-                formatItem = format,
-                downloadPlaylist = state.downloadEntirePlaylist,
-                customFolderUri = state.customFolderUri,
-                cancelToken = token,
-                callback = object : DownloaderRepository.DownloadCallback {
-                    override fun onProgress(percent: Float, speed: String, currentTitle: String) {
-                        _uiState.update {
-                            it.copy(
-                                progress = percent,
-                                speed = speed,
-                                currentDownloadingTitle = currentTitle
-                            )
-                        }
-                    }
-
-                    override fun onSuccess(fileUri: String) {
-                        _uiState.update {
-                            it.copy(
-                                progress = 100f,
-                                status = TaskStatus.SUCCESS,
-                                outputUri = fileUri,
-                                currentDownloadingTitle = ""
-                            )
-                        }
-                    }
-
-                    override fun onError(error: String) {
-                        _uiState.update {
-                            it.copy(
-                                status = TaskStatus.FAILED,
-                                errorMessage = error,
-                                currentDownloadingTitle = ""
-                            )
-                        }
-                    }
-
-                    override fun onCanceled() {
-                        _uiState.update {
-                            it.copy(
-                                status = TaskStatus.CANCELED,
-                                errorMessage = "Đã dừng tải về",
-                                currentDownloadingTitle = ""
-                            )
-                        }
-                    }
-                }
-            )
+        val app = getApplication<Application>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            app.startForegroundService(intent)
+        } else {
+            app.startService(intent)
         }
     }
 
-    fun abortDownload() {
-        currentCancelToken?.cancel()
-        downloadJob?.cancel()
-        _uiState.update {
-            it.copy(status = TaskStatus.CANCELED, errorMessage = "Đã dừng tiến trình")
-        }
+    fun removeQueueItem(taskId: String) {
+        DownloadQueueBus.removeTask(taskId)
+    }
+
+    fun clearCompletedQueue() {
+        DownloadQueueBus.clearCompleted()
     }
 }
