@@ -47,7 +47,7 @@ android {
 
 chaquopy {
     defaultConfig {
-        version = "3.10"
+        version = "3.11"
         buildPython("C:/Users/long2/AppData/Local/Programs/Python/Python312/python.exe")
         pip {
             install("yt-dlp")
@@ -67,4 +67,5 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("io.coil-kt:coil-compose:2.6.0")
 }

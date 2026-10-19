@@ -11,10 +11,11 @@ import java.io.FileInputStream
 
 object StorageHelper {
 
-    fun exportVideoToPublic(context: Context, sourceFile: File): Uri? {
+    fun exportVideoToPublic(context: Context, sourceFile: File, displayName: String? = null): Uri? {
+        val fileName = if (!displayName.isNullOrBlank()) "$displayName.mp4" else sourceFile.name
         val resolver = context.contentResolver
         val contentValues = ContentValues().apply {
-            put(MediaStore.Video.Media.DISPLAY_NAME, sourceFile.name)
+            put(MediaStore.Video.Media.DISPLAY_NAME, fileName)
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Video.Media.RELATIVE_PATH, Environment.DIRECTORY_MOVIES + "/MyDownloader")
@@ -46,10 +47,11 @@ object StorageHelper {
         return uri
     }
 
-    fun exportAudioToPublic(context: Context, sourceFile: File): Uri? {
+    fun exportAudioToPublic(context: Context, sourceFile: File, displayName: String? = null): Uri? {
+        val fileName = if (!displayName.isNullOrBlank()) "$displayName.m4a" else sourceFile.name
         val resolver = context.contentResolver
         val contentValues = ContentValues().apply {
-            put(MediaStore.Audio.Media.DISPLAY_NAME, sourceFile.name)
+            put(MediaStore.Audio.Media.DISPLAY_NAME, fileName)
             put(MediaStore.Audio.Media.MIME_TYPE, "audio/mp4")
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 put(MediaStore.Audio.Media.RELATIVE_PATH, Environment.DIRECTORY_MUSIC + "/MyDownloader")
