@@ -38,15 +38,27 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    init {
+   init {
         val savedUri = PreferencesHelper.getCustomFolderUri(application)
         val savedName = PreferencesHelper.getCustomFolderDisplayName(application)
         if (savedUri != null) {
             _uiState.update {
-                it.copy(
-                    customFolderUri = savedUri,
-                    customFolderDisplayName = savedName
-                )
+                it.copy(customFolderUri = savedUri, customFolderDisplayName = savedName)
+            }
+        }
+
+        viewModelScope.launch {
+            DownloadStateBus.state.collect { s ->
+                _uiState.update { current ->
+                    current.copy(
+                        progress = s.progress,
+                        speed = s.speed,
+                        currentDownloadingTitle = s.currentTitle,
+                        status = s.status,
+                        errorMessage = s.errorMessage,
+                        outputUri = s.outputUri
+                    )
+                }
             }
         }
     }

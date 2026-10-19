@@ -1,6 +1,7 @@
 package com.nosdrg.downloader
 
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -52,6 +53,17 @@ class MainActivity : ComponentActivity() {
 fun DownloaderScreen(viewModel: DownloadViewModel) {
     val context = LocalContext.current
     val state by viewModel.uiState.collectAsState()
+
+    val notificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { /* Quyền đã được phản hồi */ }
+
+    LaunchedEffect(Unit) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        }
+    }
+
     var inputUrl by remember { mutableStateOf("") }
     var expandedDropdown by remember { mutableStateOf(false) }
 
@@ -78,7 +90,7 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("Media Inspector & Downloader", fontSize = 22.sp, fontWeight = FontWeight.Bold)
+        Text("Trình tải video, audio", fontSize = 22.sp, fontWeight = FontWeight.Bold)
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -363,7 +375,7 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
                                 modifier = Modifier.weight(1f),
                                 shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("📁 Mở thư mục")
+                                Text("Mở thư mục")
                             }
                         }
                     }
