@@ -38,6 +38,39 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
+    init {
+        val savedUri = PreferencesHelper.getCustomFolderUri(application)
+        val savedName = PreferencesHelper.getCustomFolderDisplayName(application)
+        if (savedUri != null) {
+            _uiState.update {
+                it.copy(
+                    customFolderUri = savedUri,
+                    customFolderDisplayName = savedName
+                )
+            }
+        }
+    }
+
+    fun setCustomFolder(uri: Uri?, name: String) {
+        PreferencesHelper.saveCustomFolder(getApplication(), uri, name)
+        _uiState.update {
+            it.copy(
+                customFolderUri = uri,
+                customFolderDisplayName = name
+            )
+        }
+    }
+
+    fun resetToDefaultFolder() {
+        PreferencesHelper.saveCustomFolder(getApplication(), null, "Mặc định (Music/Movies)")
+        _uiState.update {
+            it.copy(
+                customFolderUri = null,
+                customFolderDisplayName = "Mặc định (Music/Movies)"
+            )
+        }
+    }
+
     fun inspectUrl(url: String) {
         if (url.isBlank()) {
             _uiState.update { it.copy(status = TaskStatus.FAILED, errorMessage = "Vui lòng nhập liên kết") }
@@ -97,12 +130,6 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
 
     fun setDownloadEntirePlaylist(entire: Boolean) {
         _uiState.update { it.copy(downloadEntirePlaylist = entire) }
-    }
-
-    fun setCustomFolder(uri: Uri?, name: String) {
-        _uiState.update {
-            it.copy(customFolderUri = uri, customFolderDisplayName = name)
-        }
     }
 
     fun startDownload() {

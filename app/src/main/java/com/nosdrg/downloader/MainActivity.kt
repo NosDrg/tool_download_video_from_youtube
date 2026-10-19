@@ -1,8 +1,11 @@
 package com.nosdrg.downloader
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -10,6 +13,8 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -17,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -44,9 +50,25 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DownloaderScreen(viewModel: DownloadViewModel) {
+    val context = LocalContext.current
     val state by viewModel.uiState.collectAsState()
     var inputUrl by remember { mutableStateOf("") }
     var expandedDropdown by remember { mutableStateOf(false) }
+
+    val folderPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        if (uri != null) {
+            val takeFlags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, takeFlags)
+            } catch (_: Exception) {}
+
+            val rawName = uri.lastPathSegment?.substringAfterLast(":")
+            val displayName = if (!rawName.isNullOrBlank()) rawName else "Thư mục tùy chọn"
+            viewModel.setCustomFolder(uri, displayName)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -54,7 +76,7 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
             .padding(16.dp)
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         Text("Media Inspector & Downloader", fontSize = 22.sp, fontWeight = FontWeight.Bold)
 
@@ -81,6 +103,46 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
                     CircularProgressIndicator(color = Color.White, modifier = Modifier.size(24.dp), strokeWidth = 2.dp)
                 } else {
                     Text("Kiểm tra")
+                }
+            }
+        }
+
+        Card(
+            modifier = Modifier.fillMaxWidth(),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text("Vị trí lưu:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        state.customFolderDisplayName,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Row {
+                    TextButton(
+                        onClick = { folderPicker.launch(null) },
+                        enabled = state.status != TaskStatus.DOWNLOADING
+                    ) {
+                        Text("Thay đổi")
+                    }
+                    if (state.customFolderUri != null) {
+                        TextButton(
+                            onClick = { viewModel.resetToDefaultFolder() },
+                            enabled = state.status != TaskStatus.DOWNLOADING
+                        ) {
+                            Text("Mặc định", color = MaterialTheme.colorScheme.error)
+                        }
+                    }
                 }
             }
         }
@@ -121,7 +183,6 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
                     )
                     Text("Kênh: ${meta.channel}", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
 
-                    // Card lựa chọn Playlist nếu URL có chứa &list=
                     if (meta.isPlaylist) {
                         Surface(
                             modifier = Modifier.fillMaxWidth(),
@@ -165,7 +226,6 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
                         }
                     }
 
-                    // Bộ chọn định dạng
                     ExposedDropdownMenuBox(
                         expanded = expandedDropdown,
                         onExpandedChange = {
@@ -232,53 +292,39 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
         }
 
         if (state.status == TaskStatus.DOWNLOADING) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            if (state.currentDownloadingTitle.isNotBlank()) {
-                Text(
-                    text = state.currentDownloadingTitle,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-            }
-
-            LinearProgressIndicator(
-                progress = { state.progress / 100f },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(8.dp)
-                    .clip(RoundedCornerShape(4.dp))
-            )
-
-            Row(
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
             ) {
-                Text(
-                    text = "${state.progress.toInt()}%",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    text = state.speed,
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Column(
+                    modifier = Modifier.fillMaxWidth().padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (state.currentDownloadingTitle.isNotBlank()) {
+                        Text(
+                            text = state.currentDownloadingTitle,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+
+                    LinearProgressIndicator(
+                        progress = { state.progress / 100f },
+                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp))
+                    )
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "${state.progress.toInt()}%", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Text(text = state.speed, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
             }
         }
-    }
-}
 
         when (state.status) {
             TaskStatus.SUCCESS -> {
@@ -286,9 +332,40 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
                     modifier = Modifier.fillMaxWidth(),
                     colors = CardDefaults.cardColors(containerColor = Color(0xFFE8F5E9))
                 ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
                         Text("Tải thành công!", color = Color(0xFF2E7D32), fontWeight = FontWeight.Bold)
-                        Text(state.outputUri, color = Color.DarkGray, fontSize = 12.sp)
+                        Text(state.outputUri, color = Color.DarkGray, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+
+                        val isAudio = state.selectedFormat?.isAudio ?: false
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    StorageHelper.playMediaFile(context, state.outputUri, isAudio)
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(4.dp))
+                                Text("Phát ngay")
+                            }
+
+                            Button(
+                                onClick = {
+                                    StorageHelper.openDownloadFolder(context, state.customFolderUri, isAudio)
+                                },
+                                modifier = Modifier.weight(1f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text("📁 Mở thư mục")
+                            }
+                        }
                     }
                 }
             }
