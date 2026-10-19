@@ -1,16 +1,17 @@
 package com.nosdrg.downloader
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.TimeoutCancellationException
 
 data class UiState(
     val url: String = "",
@@ -18,8 +19,11 @@ data class UiState(
     val metadata: MediaMetadata? = null,
     val selectedFormat: FormatItem? = null,
     val downloadEntirePlaylist: Boolean = false,
+    val customFolderUri: Uri? = null,
+    val customFolderDisplayName: String = "Mặc định (Music/Movies)",
     val progress: Float = 0f,
     val speed: String = "",
+    val currentDownloadingTitle: String = "",
     val status: TaskStatus = TaskStatus.IDLE,
     val errorMessage: String = "",
     val outputUri: String = ""
@@ -95,6 +99,12 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { it.copy(downloadEntirePlaylist = entire) }
     }
 
+    fun setCustomFolder(uri: Uri?, name: String) {
+        _uiState.update {
+            it.copy(customFolderUri = uri, customFolderDisplayName = name)
+        }
+    }
+
     fun startDownload() {
         val state = _uiState.value
         val format = state.selectedFormat ?: return
@@ -118,25 +128,47 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                 url = url,
                 formatItem = format,
                 downloadPlaylist = state.downloadEntirePlaylist,
+                customFolderUri = state.customFolderUri,
                 cancelToken = token,
                 callback = object : DownloaderRepository.DownloadCallback {
-                    override fun onProgress(percent: Float, speed: String) {
-                        _uiState.update { it.copy(progress = percent, speed = speed) }
+                    override fun onProgress(percent: Float, speed: String, currentTitle: String) {
+                        _uiState.update {
+                            it.copy(
+                                progress = percent,
+                                speed = speed,
+                                currentDownloadingTitle = currentTitle
+                            )
+                        }
                     }
 
                     override fun onSuccess(fileUri: String) {
                         _uiState.update {
-                            it.copy(progress = 100f, status = TaskStatus.SUCCESS, outputUri = fileUri)
+                            it.copy(
+                                progress = 100f,
+                                status = TaskStatus.SUCCESS,
+                                outputUri = fileUri,
+                                currentDownloadingTitle = ""
+                            )
                         }
                     }
 
                     override fun onError(error: String) {
-                        _uiState.update { it.copy(status = TaskStatus.FAILED, errorMessage = error) }
+                        _uiState.update {
+                            it.copy(
+                                status = TaskStatus.FAILED,
+                                errorMessage = error,
+                                currentDownloadingTitle = ""
+                            )
+                        }
                     }
 
                     override fun onCanceled() {
                         _uiState.update {
-                            it.copy(status = TaskStatus.CANCELED, errorMessage = "Đã dừng tải về")
+                            it.copy(
+                                status = TaskStatus.CANCELED,
+                                errorMessage = "Đã dừng tải về",
+                                currentDownloadingTitle = ""
+                            )
                         }
                     }
                 }

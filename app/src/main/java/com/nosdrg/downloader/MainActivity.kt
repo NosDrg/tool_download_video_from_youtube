@@ -232,17 +232,53 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
         }
 
         if (state.status == TaskStatus.DOWNLOADING) {
-            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                LinearProgressIndicator(
-                    progress = { state.progress / 100f },
-                    modifier = Modifier.fillMaxWidth().height(8.dp)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            if (state.currentDownloadingTitle.isNotBlank()) {
+                Text(
+                    text = state.currentDownloadingTitle,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
+
+            LinearProgressIndicator(
+                progress = { state.progress / 100f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(8.dp)
+                    .clip(RoundedCornerShape(4.dp))
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "${state.progress.toInt()}%",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = "Tiến độ: ${state.progress.toInt()}%  •  Tốc độ: ${state.speed}",
-                    fontSize = 13.sp
+                    text = state.speed,
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.primary
                 )
             }
         }
+    }
+}
 
         when (state.status) {
             TaskStatus.SUCCESS -> {

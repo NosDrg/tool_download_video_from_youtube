@@ -21,7 +21,8 @@ def extract_media_info(url):
         'noplaylist': True,
         'socket_timeout': 15,
         'retries': 2,
-        'extractor_args': {'youtube': {'player_client': ['android', 'web']}},
+        # Dùng client web làm chính để YouTube trả về đầy đủ luồng 1080p và 720p
+        'extractor_args': {'youtube': {'player_client': ['web', 'android']}},
         'quiet': True,
         'no_warnings': True
     }
@@ -40,28 +41,32 @@ def extract_media_info(url):
             formats = info.get('formats', [])
             video_map = {}
 
+            # 1. Luồng Audio chất lượng cao
             audio_format = {
                 "id": "best_audio_m4a",
-                "label": "Audio M4A (Chất lượng cao nhất)",
+                "label": "Audio M4A",
                 "type": "audio",
                 "selector": "bestaudio[ext=m4a]/bestaudio"
             }
 
+            # 2. Lọc tất cả luồng Video (chấp nhận cả DASH stream không tiếng vì đã có MediaMuxer)
             for f in formats:
                 height = f.get('height')
                 vcodec = f.get('vcodec') or 'none'
+                ext = f.get('ext', '')
                 filesize = f.get('filesize') or f.get('filesize_approx') or 0
-                filesize_mb = f" (~{round(filesize / (1024 * 1024), 1)} MB)" if filesize else ""
+                filesize_mb = f" ({round(filesize / (1024 * 1024), 1)} MB)" if filesize else ""
 
                 if height and vcodec != 'none' and height in (1080, 720, 480, 360):
-                    if height not in video_map:
+                    if height not in video_map or ext == 'mp4':
                         video_map[height] = {
                             "id": f"video_{height}",
-                            "label": f"Video {height}p (MP4){filesize_mb}",
+                            "label": f"Video {height}p {ext.upper()}{filesize_mb}",
                             "type": "video",
                             "height": height
                         }
 
+            # Sắp xếp các độ phân giải giảm dần (1080p -> 720p -> 480p -> 360p)
             sorted_videos = [video_map[h] for h in sorted(video_map.keys(), reverse=True)]
 
             result = {
@@ -77,6 +82,7 @@ def extract_media_info(url):
     except Exception as e:
         return json.dumps({"error": str(e)}, ensure_ascii=False)
 
+    
 def download_media_task(url, output_dir, format_type, height=720, download_playlist=False, cancel_token=None, callback=None):
     if not download_playlist:
         url = clean_url(url)
@@ -92,9 +98,21 @@ def download_media_task(url, output_dir, format_type, height=720, download_playl
             speed = d.get('speed') or 0
             speed_str = f"{speed / 1024 / 1024:.2f} MB/s" if speed > 0 else "Đang tải..."
             
-            # Nếu tải playlist, hiển thị thêm số thứ tự bài đang tải
-            idx_str = f"[{d.get('info_dict', {}).get('playlist_index', 1)}] " if download_playlist else ""
-            callback.onProgress(float(percent), f"{idx_str}{speed_str}")
+            # Lấy thông tin bài hát hiện tại từ info_dict
+            info = d.get('info_dict') or {}
+            raw_title = info.get('title') or ""
+            p_index = info.get('playlist_index')
+            p_total = info.get('n_entries') or info.get('playlist_count')
+
+            if download_playlist and p_index and p_total:
+                display_title = f"[{p_index}/{p_total}] {raw_title}"
+            elif download_playlist and p_index:
+                display_title = f"[{p_index}] {raw_title}"
+            else:
+                display_title = raw_title
+
+            # Gửi 3 tham số: phần trăm, tốc độ, tiêu đề cụ thể
+            callback.onProgress(float(percent), speed_str, display_title)
 
     base_opts = {
         'progress_hooks': [progress_hook],
@@ -105,6 +123,7 @@ def download_media_task(url, output_dir, format_type, height=720, download_playl
         'quiet': True,
         'no_warnings': True
     }
+
 
     if download_playlist:
         out_pattern = os.path.join(output_dir, '%(title)s.%(ext)s')

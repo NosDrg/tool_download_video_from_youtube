@@ -1,6 +1,7 @@
 package com.nosdrg.downloader
 
 import android.content.Context
+import android.net.Uri
 import com.chaquo.python.PyException
 import com.chaquo.python.Python
 import kotlinx.coroutines.Dispatchers
@@ -11,7 +12,7 @@ import java.io.File
 class DownloaderRepository(private val context: Context) {
 
     interface DownloadCallback {
-        fun onProgress(percent: Float, speed: String)
+        fun onProgress(percent: Float, speed: String, currentTitle: String = "")
         fun onSuccess(fileUri: String)
         fun onError(error: String)
         fun onCanceled()
@@ -62,6 +63,7 @@ class DownloaderRepository(private val context: Context) {
         url: String,
         formatItem: FormatItem,
         downloadPlaylist: Boolean,
+        customFolderUri: Uri?,
         cancelToken: CancelToken,
         callback: DownloadCallback
     ) = withContext(Dispatchers.IO) {
@@ -83,8 +85,8 @@ class DownloaderRepository(private val context: Context) {
                 cancelToken,
                 object {
                     @Suppress("unused")
-                    fun onProgress(percent: Float, speed: String) {
-                        callback.onProgress(percent, speed)
+                    fun onProgress(percent: Float, speed: String, currentTitle: String) {
+                        callback.onProgress(percent, speed, currentTitle)
                     }
                 }
             ).toString()
@@ -94,19 +96,19 @@ class DownloaderRepository(private val context: Context) {
             val isAudio = resJson.getBoolean("is_audio")
 
             if (status == "playlist_completed") {
-                // Xuất tất cả các file vừa tải trong cache ra MediaStore
                 val cacheFolder = File(cacheDir)
-                val files = cacheFolder.listFiles { f -> 
-                    if (isAudio) f.extension.equals("m4a", true) 
-                    else f.extension.equals("mp4", true) 
+                val files = cacheFolder.listFiles { f ->
+                    if (isAudio) f.extension.equals("m4a", true)
+                    else f.extension.equals("mp4", true)
                 } ?: emptyArray()
 
                 var savedCount = 0
                 for (file in files) {
-                    val uri = if (isAudio) {
-                        StorageHelper.exportAudioToPublic(context, file)
+                    val uri = if (customFolderUri != null) {
+                        StorageHelper.exportToCustomTreeUri(context, file, customFolderUri, isAudio)
                     } else {
-                        StorageHelper.exportVideoToPublic(context, file)
+                        if (isAudio) StorageHelper.exportAudioToPublic(context, file)
+                        else StorageHelper.exportVideoToPublic(context, file)
                     }
                     if (uri != null) savedCount++
                 }
@@ -117,7 +119,7 @@ class DownloaderRepository(private val context: Context) {
 
             val finalFile: File
             if (status == "mux_required") {
-                callback.onProgress(100f, "Đang ghép video và audio...")
+                callback.onProgress(100f, "Đang ghép...", "Đang ghép video và audio bằng MediaMuxer")
                 val vFile = File(resJson.getString("video_path"))
                 val aFile = File(resJson.getString("audio_path"))
                 val mergedFile = File(cacheDir, "completed_video_${System.currentTimeMillis()}.mp4")
@@ -132,10 +134,11 @@ class DownloaderRepository(private val context: Context) {
                 finalFile = File(resJson.getString("file_path"))
             }
 
-            val finalUri = if (isAudio) {
-                StorageHelper.exportAudioToPublic(context, finalFile)
+            val finalUri = if (customFolderUri != null) {
+                StorageHelper.exportToCustomTreeUri(context, finalFile, customFolderUri, isAudio)
             } else {
-                StorageHelper.exportVideoToPublic(context, finalFile)
+                if (isAudio) StorageHelper.exportAudioToPublic(context, finalFile)
+                else StorageHelper.exportVideoToPublic(context, finalFile)
             }
 
             if (finalUri != null) {
