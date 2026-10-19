@@ -43,3 +43,6 @@ archive.txt
 Thumbs.db
 [Dd]esktop.ini
 $RECYCLE.BIN/
+
+.gradle/
+gradle/
