@@ -30,6 +30,6 @@ object PreferencesHelper {
 
     fun getCustomFolderDisplayName(context: Context): String {
         val prefs = context.getSharedPreferences(PREF_NAME, Context.MODE_PRIVATE)
-        return prefs.getString(KEY_FOLDER_NAME, "Mặc định (Music/Movies)") ?: "Mặc định (Music/Movies)"
+        return prefs.getString(KEY_FOLDER_NAME, "Mặc định") ?: "Mặc định"
     }
 }

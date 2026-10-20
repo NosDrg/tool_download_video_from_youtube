@@ -57,7 +57,7 @@ class DownloadService : Service() {
     }
 
     private fun startQueueProcessing() {
-        val initialNotif = buildNotification(0, "Hang doi", "Dang khoi tao...")
+        val initialNotif = buildNotification(0, "Hàng đợi", "Đang khởi tạo...")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(NOTIFICATION_ID, initialNotif, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
@@ -94,7 +94,7 @@ class DownloadService : Service() {
 
                         override fun onSuccess(fileUri: String) {
                             DownloadQueueBus.setTaskSuccess(nextTask.id, fileUri)
-                            showCompletedNotification("Da tai xong", nextTask.title)
+                            showCompletedNotification("Đã tải xong", nextTask.title)
                         }
 
                         override fun onError(error: String) {
@@ -134,7 +134,7 @@ class DownloadService : Service() {
             .setProgress(100, progress, progress == 0)
             .setOngoing(true)
             .setContentIntent(pOpen)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Dung bai nay", pStop)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Dừng bài này", pStop)
             .setSilent(true)
             .build()
     }
@@ -159,7 +159,7 @@ class DownloadService : Service() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
                 CHANNEL_ID,
-                "Hang doi tai Media",
+                "Hàng đợi tải Media",
                 NotificationManager.IMPORTANCE_LOW
             )
             notificationManager.createNotificationChannel(channel)

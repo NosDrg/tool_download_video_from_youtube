@@ -53,13 +53,13 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun resetToDefaultFolder() {
-        PreferencesHelper.saveCustomFolder(getApplication(), null, "Mac dinh (Music/Movies)")
-        _uiState.update { it.copy(customFolderUri = null, customFolderDisplayName = "Mac dinh (Music/Movies)") }
+        PreferencesHelper.saveCustomFolder(getApplication(), null, "Mặc định")
+        _uiState.update { it.copy(customFolderUri = null, customFolderDisplayName = "Mặc định") }
     }
 
     fun inspectUrl(url: String) {
         if (url.isBlank()) {
-            _uiState.update { it.copy(errorMessage = "Vui long nhap lien ket") }
+            _uiState.update { it.copy(errorMessage = "Vui lòng nhập liên kết") }
             return
         }
 
@@ -94,7 +94,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                     _uiState.update {
                         it.copy(
                             isAnalyzing = false,
-                            errorMessage = err.message ?: "Phan tich URL that bai"
+                            errorMessage = err.message ?: "Phân tích URL thất bại"
                         )
                     }
                 }
@@ -102,7 +102,7 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                 _uiState.update {
                     it.copy(
                         isAnalyzing = false,
-                        errorMessage = "Qua thoi gian ket noi (Timeout). Vui long thu lai."
+                        errorMessage = "Quá thời gian kết nối (Timeout). Vui lòng thử lại."
                     )
                 }
             }

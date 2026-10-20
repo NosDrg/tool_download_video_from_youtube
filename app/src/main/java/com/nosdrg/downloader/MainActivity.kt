@@ -78,7 +78,7 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
             } catch (_: Exception) {}
 
             val rawName = uri.lastPathSegment?.substringAfterLast(":")
-            val displayName = if (!rawName.isNullOrBlank()) rawName else "Thu muc tuy chon"
+            val displayName = if (!rawName.isNullOrBlank()) rawName else "Thư mục tùy chọn"
             viewModel.setCustomFolder(uri, displayName)
         }
     }
@@ -225,7 +225,7 @@ fun DownloaderScreen(viewModel: DownloadViewModel) {
                                         selected = state.downloadEntirePlaylist,
                                         onClick = { viewModel.setDownloadEntirePlaylist(true) }
                                     )
-                                    Text("ải toàn bộ Playlist", fontSize = 14.sp)
+                                    Text("Tải toàn bộ Playlist", fontSize = 14.sp)
                                 }
                             }
                         }

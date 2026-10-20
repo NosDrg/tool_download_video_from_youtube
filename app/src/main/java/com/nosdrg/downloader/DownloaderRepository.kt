@@ -123,13 +123,13 @@ class DownloaderRepository(private val context: Context) {
                     }
                     if (uri != null) savedCount++
                 }
-                callback.onSuccess("Da luu $savedCount tep tu Playlist.")
+                callback.onSuccess("Đã lưu $savedCount tập tin từ Playlist.")
                 return@withContext
             }
 
             val finalFile: File
             if (status == "mux_required") {
-                callback.onProgress(100f, "Dang ghep...", "Dang ghep luong MediaMuxer")
+                callback.onProgress(100f, "Đang ghép...", "Đang ghép luồng MediaMuxer")
                 val vFile = File(resJson.getString("video_path"))
                 val aFile = File(resJson.getString("audio_path"))
                 val mergedFile = File(cacheDir, "completed_video_${System.currentTimeMillis()}.mp4")
@@ -162,7 +162,7 @@ class DownloaderRepository(private val context: Context) {
             if (finalUri != null) {
                 callback.onSuccess(finalUri.toString())
             } else {
-                callback.onError("Khong the luu file vao bo nho may.")
+                callback.onError("Không thể lưu file vào bộ nhớ máy.")
             }
         } catch (e: PyException) {
             val msg = e.message ?: ""
@@ -172,7 +172,7 @@ class DownloaderRepository(private val context: Context) {
                 callback.onError(msg)
             }
         } catch (e: Exception) {
-            callback.onError(e.localizedMessage ?: "Loi he thong")
+            callback.onError(e.localizedMessage ?: "Lỗi hệ thống")
         }
     }
 }
