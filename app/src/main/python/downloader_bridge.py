@@ -37,19 +37,27 @@ def clean_url(url):
         return url.split("&list=")[0]
     return url
 
-def extract_media_info(url):
+def extract_media_info(url, cookie_path=None):
+    is_pure_playlist = "playlist?list=" in url
     has_list_param = "list=" in url and ("youtube.com" in url or "youtu.be" in url)
-    target_url = clean_url(url)
+    
+    # Neu la link video thuong co kem list thi clean, neu la link playlist thuan thi giu nguyen
+    target_url = url if is_pure_playlist else clean_url(url)
 
     ydl_opts = {
         'skip_download': True,
         'nocheckcertificate': True,
-        'noplaylist': True,
+        # Neu la playlist thuan thi tat noplaylist va chi lay 1 item dau lam mau format
+        'noplaylist': not is_pure_playlist,
+        'playlist_items': '1' if is_pure_playlist else None,
         'socket_timeout': 15,
         'retries': 2,
         'quiet': True,
         'no_warnings': True
     }
+
+    if cookie_path and os.path.exists(cookie_path):
+        ydl_opts['cookiefile'] = cookie_path
 
     if "youtube.com" in url or "youtu.be" in url:
         ydl_opts['extractor_args'] = {'youtube': {'player_client': ['web', 'android']}}
@@ -58,20 +66,30 @@ def extract_media_info(url):
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(target_url, download=False)
             if not info:
-                return json.dumps({"error": "Không thể lấy thông tin URL"})
+                return json.dumps({"error": "Khong the lay thong tin URL"})
 
-            thumbnail = info.get('thumbnail') or ""
-            if not thumbnail and info.get('thumbnails'):
-                thumbnail = info['thumbnails'][-1].get('url', '')
+            # Xu ly cau truc du lieu neu la Playlist
+            if 'entries' in info and info['entries']:
+                first_entry = info['entries'][0]
+                formats = first_entry.get('formats', [])
+                thumbnail = info.get('thumbnail') or first_entry.get('thumbnail') or ""
+                channel = info.get('uploader') or first_entry.get('uploader') or "YouTube Playlist"
+                p_count = info.get('playlist_count') or len(info['entries'])
+                dur_str = f"Playlist ({p_count} video)"
+                display_title = f"[Playlist] {info.get('title', 'Danh sach phat')}"
+            else:
+                formats = info.get('formats', [])
+                thumbnail = info.get('thumbnail') or ""
+                if not thumbnail and info.get('thumbnails'):
+                    thumbnail = info['thumbnails'][-1].get('url', '')
+                channel = info.get('uploader') or info.get('channel') or info.get('creator') or 'Mang xa hoi'
+                duration_sec = info.get('duration') or 0
+                mins, secs = divmod(duration_sec, 60)
+                hours, mins = divmod(mins, 60)
+                dur_str = f"{hours:02d}:{mins:02d}:{secs:02d}" if hours > 0 else f"{mins:02d}:{secs:02d}"
+                display_title = info.get('title', 'Media khong tieu de')
 
-            duration_sec = info.get('duration') or 0
-            mins, secs = divmod(duration_sec, 60)
-            hours, mins = divmod(mins, 60)
-            dur_str = f"{hours:02d}:{mins:02d}:{secs:02d}" if hours > 0 else f"{mins:02d}:{secs:02d}"
-
-            formats = info.get('formats', [])
             video_map = {}
-
             audio_format = {
                 "id": "best_audio_m4a",
                 "label": "Audio M4A",
@@ -84,13 +102,13 @@ def extract_media_info(url):
                 vcodec = f.get('vcodec') or 'none'
                 ext = f.get('ext', 'mp4')
                 filesize = f.get('filesize') or f.get('filesize_approx') or 0
-                filesize_mb = f" ({round(filesize / (1024 * 1024), 1)} MB)" if filesize else ""
+                filesize_mb = f" (~{round(filesize / (1024 * 1024), 1)} MB)" if filesize else ""
 
                 if height and vcodec != 'none':
                     if height not in video_map or ext == 'mp4':
                         video_map[height] = {
                             "id": f"video_{height}",
-                            "label": f"Video {height}p {ext.upper()}{filesize_mb}",
+                            "label": f"Video {height}p ({ext.upper()}){filesize_mb}",
                             "type": "video",
                             "height": height
                         }
@@ -98,35 +116,21 @@ def extract_media_info(url):
             if not video_map:
                 video_map[720] = {
                     "id": "video_best",
-                    "label": "Video Gốc",
+                    "label": "Video Goc",
                     "type": "video",
                     "height": 720
                 }
 
             sorted_videos = [video_map[h] for h in sorted(video_map.keys(), reverse=True)]
 
-            # Bóc tách phụ đề có sẵn (bao gồm cả manual và auto-captions)
-            subtitles_list = []
-            all_subs = {}
-            if info.get('subtitles'):
-                all_subs.update(info['subtitles'])
-            if info.get('automatic_captions'):
-                all_subs.update(info['automatic_captions'])
-
-            # Lọc các ngôn ngữ phổ biến
-            priority_langs = {'vi': 'Tiếng Việt', 'en': 'Tiếng Anh', 'ja': 'Tiếng Nhật', 'ko': 'Tiếng Hàn', 'zh': 'Tiếng Trung'}
-            for code, name in priority_langs.items():
-                if any(code in k for k in all_subs.keys()):
-                    subtitles_list.append({"code": code, "name": name})
-
             result = {
-                "title": info.get('title', 'Media không tiêu đề'),
+                "title": display_title,
                 "thumbnail": thumbnail,
-                "channel": info.get('uploader') or info.get('channel') or info.get('creator') or 'Mạng xã hội',
+                "channel": channel,
                 "duration": dur_str,
                 "formats": [audio_format] + sorted_videos,
-                "subtitles": subtitles_list,
-                "is_playlist": has_list_param
+                "subtitles": [],
+                "is_playlist": is_pure_playlist or has_list_param
             }
             return json.dumps(result, ensure_ascii=False)
 
