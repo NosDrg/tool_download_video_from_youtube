@@ -176,24 +176,31 @@ def download_media_task(url, output_dir, format_type, height=720, download_playl
         base_opts['extractor_args'] = {'youtube': {'player_client': ['web', 'android']}}
 
     # Tải Playlist
+    # 1. Cấu hình định dạng cho Playlist
     if download_playlist:
         out_pattern = os.path.join(output_dir, '%(title)s.%(ext)s')
         opts = dict(base_opts)
         opts['outtmpl'] = out_pattern
-        opts['format'] = 'bestaudio[ext=m4a]/bestaudio' if format_type == "audio" else f'best[height<={height}][ext=mp4]/best[ext=mp4]/best'
+        if format_type == "audio":
+            # Ưu tiên m4a -> audio bất kỳ -> stream gốc
+            opts['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
+        else:
+            # Ưu tiên mp4 có tiếng -> stream có tiếng bất kỳ -> video phân giải phù hợp
+            opts['format'] = f'best[height<={height}][ext=mp4]/best[height<={height}]/best'
 
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([url])
 
         return json.dumps({"status": "playlist_completed", "is_audio": (format_type == "audio")})
 
-    # Tải Audio
+    # 2. Cấu hình định dạng cho Audio đơn lẻ
     if format_type == "audio":
         audio_path = os.path.join(output_dir, "audio_stream.m4a")
         if os.path.exists(audio_path):
             os.remove(audio_path)
 
         opts = dict(base_opts)
+        # Fallback từ m4a sang audio bất kỳ, cuối cùng đến best để hỗ trợ TikTok/FB
         opts['format'] = 'bestaudio[ext=m4a]/bestaudio/best'
         opts['outtmpl'] = audio_path
 
@@ -204,41 +211,38 @@ def download_media_task(url, output_dir, format_type, height=720, download_playl
 
         return json.dumps({"status": "ready", "is_audio": True, "file_path": audio_path, "sub_path": ""})
 
-    # Tải Video
+    # 3. Cấu hình định dạng cho Video đơn lẻ
     video_path = os.path.join(output_dir, "video_stream.mp4")
     audio_path = os.path.join(output_dir, "audio_stream.m4a")
     for p in (video_path, audio_path):
         if os.path.exists(p):
             os.remove(p)
 
-    # Xóa file phụ đề cũ còn sót trong cache
-    for old_sub in glob.glob(os.path.join(output_dir, "*.vtt")):
-        try: os.remove(old_sub)
-        except Exception: pass
-
+    # Thử tải luồng Progressive trước (TikTok, FB, Reels hoặc YouTube 360p/720p có sẵn tiếng)
     opts_prog = dict(base_opts)
-    opts_prog['format'] = f'best[height<={height}][ext=mp4]/best[ext=mp4]/best'
+    opts_prog['format'] = f'best[height<={height}][ext=mp4]/best[height<={height}]/best'
     opts_prog['outtmpl'] = video_path
 
     is_progressive = False
     try:
         with yt_dlp.YoutubeDL(opts_prog) as ydl:
             info = ydl.extract_info(url, download=True)
+            # Chỉ coi là progressive nếu file tải về có cả video codec và audio codec
             if info.get('vcodec') != 'none' and info.get('acodec') != 'none':
                 is_progressive = True
     except Exception:
         is_progressive = False
 
-    # Tìm file phụ đề .vtt vừa tải xuống
     sub_files = glob.glob(os.path.join(output_dir, "*.vtt"))
     found_sub_path = sub_files[0] if sub_files else ""
 
     if is_progressive:
         return json.dumps({"status": "ready", "is_audio": False, "file_path": video_path, "sub_path": found_sub_path})
 
-    # Nếu cần tách ghép luồng
+    # Nếu không có luồng progressive, bóc tách luồng DASH (YouTube 1080p+)
+    # Bỏ ép buộc [ext=mp4] ở nhánh dự phòng để không bỏ sót luồng WebM/VP9
     opts_v = dict(base_opts)
-    opts_v['format'] = f'bestvideo[height<={height}][ext=mp4]/bestvideo'
+    opts_v['format'] = f'bestvideo[height<={height}][ext=mp4]/bestvideo[height<={height}]/bestvideo/best'
     opts_v['outtmpl'] = video_path
     with yt_dlp.YoutubeDL(opts_v) as ydl:
         ydl.download([url])
@@ -248,9 +252,6 @@ def download_media_task(url, output_dir, format_type, height=720, download_playl
     opts_a['outtmpl'] = audio_path
     with yt_dlp.YoutubeDL(opts_a) as ydl:
         ydl.download([url])
-
-    sub_files = glob.glob(os.path.join(output_dir, "*.vtt"))
-    found_sub_path = sub_files[0] if sub_files else ""
 
     return json.dumps({
         "status": "mux_required",
