@@ -4,12 +4,43 @@ import android.content.Context
 import android.net.Uri
 import com.chaquo.python.PyException
 import com.chaquo.python.Python
+import com.nosdrg.downloader.AppDatabase
+import com.nosdrg.downloader.DownloadHistoryEntity
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.File
 
 class DownloaderRepository(private val context: Context) {
+
+    private val historyDao = AppDatabase.getInstance(context).historyDao()
+
+    val downloadHistory: Flow<List<DownloadHistoryEntity>> = historyDao.getAllHistory()
+
+    suspend fun saveHistory(
+        title: String,
+        url: String,
+        formatLabel: String,
+        isAudio: Boolean,
+        outputUri: String,
+        thumbnail: String
+    ) {
+        historyDao.insertHistory(
+            DownloadHistoryEntity(
+                title = title,
+                url = url,
+                formatLabel = formatLabel,
+                isAudio = isAudio,
+                outputUri = outputUri,
+                thumbnail = thumbnail
+            )
+        )
+    }
+
+    suspend fun deleteHistory(id: Long) = historyDao.deleteById(id)
+
+    suspend fun clearAllHistory() = historyDao.clearAll()
 
     interface DownloadCallback {
         fun onProgress(percent: Float, speed: String, currentTitle: String = "")
@@ -22,7 +53,8 @@ class DownloaderRepository(private val context: Context) {
         try {
             val py = Python.getInstance()
             val bridge = py.getModule("downloader_bridge")
-            val rawJson = bridge.callAttr("extract_media_info", url).toString()
+            val cookiePath = PreferencesHelper.getCookieFilePath(context)
+            val rawJson = bridge.callAttr("extract_media_info", url, cookiePath).toString()
             val json = JSONObject(rawJson)
 
             if (json.has("error")) {
@@ -82,10 +114,12 @@ class DownloaderRepository(private val context: Context) {
             val py = Python.getInstance()
             val bridge = py.getModule("downloader_bridge")
             val cacheDir = context.cacheDir.absolutePath
+            val cookiePath = PreferencesHelper.getCookieFilePath(context) // <-- Đọc đường dẫn cookie
 
             val formatType = if (formatItem.isAudio) "audio" else "video"
             val height = if (formatItem.isAudio) 0 else (formatItem.formatSelector.toIntOrNull() ?: 720)
 
+            // Truyền cookiePath ở vị trí thứ 7, cancelToken ở vị trí thứ 8
             val rawResult = bridge.callAttr(
                 "download_media_task",
                 url,
@@ -94,6 +128,7 @@ class DownloaderRepository(private val context: Context) {
                 height,
                 downloadPlaylist,
                 subLang,
+                cookiePath,
                 cancelToken,
                 object {
                     @Suppress("unused")
@@ -121,15 +156,18 @@ class DownloaderRepository(private val context: Context) {
                         if (isAudio) StorageHelper.exportAudioToPublic(context, file)
                         else StorageHelper.exportVideoToPublic(context, file)
                     }
-                    if (uri != null) savedCount++
+                    if (uri != null) {
+                        savedCount++
+                        saveHistory(file.nameWithoutExtension, url, formatItem.label, isAudio, uri.toString(), "")
+                    }
                 }
-                callback.onSuccess("Đã lưu $savedCount tập tin từ Playlist.")
+                callback.onSuccess("Da luu $savedCount tep tu Playlist.")
                 return@withContext
             }
 
             val finalFile: File
             if (status == "mux_required") {
-                callback.onProgress(100f, "Đang ghép...", "Đang ghép luồng MediaMuxer")
+                callback.onProgress(100f, "Dang ghep...", "Dang ghep luong MediaMuxer")
                 val vFile = File(resJson.getString("video_path"))
                 val aFile = File(resJson.getString("audio_path"))
                 val mergedFile = File(cacheDir, "completed_video_${System.currentTimeMillis()}.mp4")
@@ -162,7 +200,7 @@ class DownloaderRepository(private val context: Context) {
             if (finalUri != null) {
                 callback.onSuccess(finalUri.toString())
             } else {
-                callback.onError("Không thể lưu file vào bộ nhớ máy.")
+                callback.onError("Khong the luu file vao bo nho may.")
             }
         } catch (e: PyException) {
             val msg = e.message ?: ""
@@ -172,7 +210,7 @@ class DownloaderRepository(private val context: Context) {
                 callback.onError(msg)
             }
         } catch (e: Exception) {
-            callback.onError(e.localizedMessage ?: "Lỗi hệ thống")
+            callback.onError(e.localizedMessage ?: "Loi he thong")
         }
     }
 }
