@@ -103,6 +103,7 @@ class DownloaderRepository(private val context: Context) {
 
     suspend fun downloadMedia(
         url: String,
+        title: String,
         formatItem: FormatItem,
         downloadPlaylist: Boolean,
         subLang: String?,
@@ -114,12 +115,11 @@ class DownloaderRepository(private val context: Context) {
             val py = Python.getInstance()
             val bridge = py.getModule("downloader_bridge")
             val cacheDir = context.cacheDir.absolutePath
-            val cookiePath = PreferencesHelper.getCookieFilePath(context) // <-- Đọc đường dẫn cookie
+            val cookiePath = PreferencesHelper.getCookieFilePath(context)
 
             val formatType = if (formatItem.isAudio) "audio" else "video"
             val height = if (formatItem.isAudio) 0 else (formatItem.formatSelector.toIntOrNull() ?: 720)
 
-            // Truyền cookiePath ở vị trí thứ 7, cancelToken ở vị trí thứ 8
             val rawResult = bridge.callAttr(
                 "download_media_task",
                 url,
@@ -140,28 +140,68 @@ class DownloaderRepository(private val context: Context) {
 
             val resJson = JSONObject(rawResult)
             val status = resJson.getString("status")
+
+            if (status == "error") {
+                val errorMsg = resJson.optString("error", "Loi khong xac dinh tu Playlist")
+                callback.onError(errorMsg)
+                return@withContext
+            }
+
             val isAudio = resJson.getBoolean("is_audio")
 
             if (status == "playlist_completed") {
-                val cacheFolder = File(cacheDir)
-                val files = cacheFolder.listFiles { f ->
-                    if (isAudio) f.extension.equals("m4a", true) else f.extension.equals("mp4", true)
-                } ?: emptyArray()
+                val playlistDirStr = resJson.getString("playlist_dir")
+                val playlistDir = File(playlistDirStr)
+
+                val audioExts = setOf("m4a", "mp3", "opus", "aac", "ogg", "wav", "flac")
+                val videoExts = setOf("mp4", "webm", "mkv", "3gp", "mov", "avi")
+                val allSupportedExts = audioExts + videoExts
+
+                val files = playlistDir.walkTopDown()
+                    .filter { file ->
+                        file.isFile &&
+                        allSupportedExts.contains(file.extension.lowercase()) &&
+                        !file.name.endsWith(".part") &&
+                        !file.name.endsWith(".ytdl")
+                    }
+                    .sortedBy { it.name }
+                    .toList()
+
+                if (files.isEmpty()) {
+                    playlistDir.deleteRecursively()
+                    callback.onError("Khong tim thay tep hop le nao duoc tai ve tu Playlist.")
+                    return@withContext
+                }
+
+                // Uu tien lua chon Audio tu UI neu nguoi dung da chu dong chon
+                val isOverallAudio = formatItem.isAudio || isAudio
 
                 var savedCount = 0
                 for (file in files) {
+                    val itemTitle = file.nameWithoutExtension
+                    val fileExt = file.extension.lowercase()
+                    val isCurrentFileAudio = isOverallAudio || audioExts.contains(fileExt)
+
                     val uri = if (customFolderUri != null) {
-                        StorageHelper.exportToCustomTreeUri(context, file, customFolderUri, isAudio)
+                        StorageHelper.exportToCustomTreeUri(context, file, itemTitle, customFolderUri, isCurrentFileAudio)
                     } else {
-                        if (isAudio) StorageHelper.exportAudioToPublic(context, file)
-                        else StorageHelper.exportVideoToPublic(context, file)
+                        if (isCurrentFileAudio) StorageHelper.exportAudioToPublic(context, file, itemTitle)
+                        else StorageHelper.exportVideoToPublic(context, file, itemTitle)
                     }
+
                     if (uri != null) {
                         savedCount++
-                        saveHistory(file.nameWithoutExtension, url, formatItem.label, isAudio, uri.toString(), "")
+                        saveHistory(itemTitle, url, formatItem.label, isCurrentFileAudio, uri.toString(), "")
                     }
                 }
-                callback.onSuccess("Da luu $savedCount tep tu Playlist.")
+
+                playlistDir.deleteRecursively()
+
+                if (savedCount == 0) {
+                    callback.onError("Loi: Khong the luu tep vao bo nho thiet bi.")
+                } else {
+                    callback.onSuccess("Da luu thanh cong $savedCount tep tu Playlist.")
+                }
                 return@withContext
             }
 
@@ -186,15 +226,15 @@ class DownloaderRepository(private val context: Context) {
             if (subPath.isNotBlank()) {
                 val subFile = File(subPath)
                 if (subFile.exists()) {
-                    StorageHelper.exportSubtitleToPublic(context, subFile, finalFile.nameWithoutExtension, customFolderUri)
+                    StorageHelper.exportSubtitleToPublic(context, subFile, title, customFolderUri)
                 }
             }
 
             val finalUri = if (customFolderUri != null) {
-                StorageHelper.exportToCustomTreeUri(context, finalFile, customFolderUri, isAudio)
+                StorageHelper.exportToCustomTreeUri(context, finalFile, title, customFolderUri, isAudio)
             } else {
-                if (isAudio) StorageHelper.exportAudioToPublic(context, finalFile)
-                else StorageHelper.exportVideoToPublic(context, finalFile)
+                if (isAudio) StorageHelper.exportAudioToPublic(context, finalFile, title)
+                else StorageHelper.exportVideoToPublic(context, finalFile, title)
             }
 
             if (finalUri != null) {

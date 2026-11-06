@@ -80,6 +80,7 @@ class DownloadService : Service() {
 
                 repository.downloadMedia(
                     url = nextTask.url,
+                    title = nextTask.title, // <-- Bổ sung tham số này
                     formatItem = nextTask.formatItem,
                     downloadPlaylist = nextTask.downloadPlaylist,
                     subLang = nextTask.subLang,
@@ -94,7 +95,18 @@ class DownloadService : Service() {
 
                         override fun onSuccess(fileUri: String) {
                             DownloadQueueBus.setTaskSuccess(nextTask.id, fileUri)
-                            showCompletedNotification("Đã tải xong", nextTask.title)
+                            showCompletedNotification("Da tai xong", nextTask.title)
+
+                            serviceScope.launch {
+                                repository.saveHistory(
+                                    title = nextTask.title,
+                                    url = nextTask.url,
+                                    formatLabel = nextTask.formatItem.label,
+                                    isAudio = nextTask.formatItem.isAudio,
+                                    outputUri = fileUri,
+                                    thumbnail = nextTask.thumbnail
+                                )
+                            }
                         }
 
                         override fun onError(error: String) {

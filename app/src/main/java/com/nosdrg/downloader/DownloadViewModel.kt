@@ -87,7 +87,8 @@ class DownloadViewModel(application: Application) : AndroidViewModel(application
                             isAnalyzing = false,
                             metadata = data,
                             selectedFormat = data.formats.firstOrNull(),
-                            selectedSubtitle = null
+                            selectedSubtitle = null,
+                            downloadEntirePlaylist = data.isPlaylist // Tu dong chon tai toan bo playlist
                         )
                     }
                 }.onFailure { err ->
